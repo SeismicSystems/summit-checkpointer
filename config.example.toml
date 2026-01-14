@@ -1,0 +1,143 @@
+# Summit-Checkpointer Example Configuration
+# Copy this file to config.toml and adjust for your setup
+
+# ============================================================================
+# Reth Configuration
+# ============================================================================
+[reth]
+# Reth JSON-RPC endpoint
+# This is used to monitor the current block number
+rpc_url = "http://localhost:8545"
+
+# Path to reth's MDBX database
+# NOTE: This should point to the 'db' directory itself
+# Example: If your reth data is at /var/lib/reth, and it contains:
+#   - /var/lib/reth/db/
+#   - /var/lib/reth/static_files/
+# Then set this to: /var/lib/reth/db
+db_path = "/var/lib/reth/db"
+
+# ============================================================================
+# Checkpointing Configuration
+# ============================================================================
+[checkpoint]
+# Number of blocks per epoch (checkpoint created at each epoch boundary)
+# Example: 1000 means checkpoints at blocks 1000, 2000, 3000, etc.
+# For testing, you can use a smaller value like 10 or 100
+epoch_blocks = 1000
+
+# Number of blocks to wait after epoch boundary before creating checkpoint
+# This gives reth time to flush all data to disk
+# Example: If epoch_blocks=1000 and checkpoint_delay_blocks=3,
+#   the checkpoint will be created when we reach block 1003 (for epoch at block 1000)
+# Recommended: 2-5 blocks depending on your setup
+checkpoint_delay_blocks = 3
+
+# Directory where checkpoints will be saved
+# Each checkpoint creates a subdirectory like: epoch_5_block_1000/
+# Make sure this location has enough disk space (each checkpoint can be large)
+output_dir = "/var/lib/reth/checkpoints"
+
+# Use compact mode when copying the MDBX database
+# This reduces the checkpoint size by compacting the database during copy
+# Recommended: true (unless you need to preserve exact database layout)
+compact = true
+
+# Path to mdbx_copy binary
+# Can be absolute path or just "mdbx_copy" if it's in your PATH
+# To find it: which mdbx_copy
+mdbx_copy_path = "mdbx_copy"
+
+# Path to reth binary
+# Can be absolute path or just "reth" if it's in your PATH
+# To find it: which reth
+reth_path = "reth"
+
+# ============================================================================
+# Summit Configuration
+# ============================================================================
+[summit]
+# Enable Summit consensus client integration
+# Set to false if you're not using Summit or want to test without it
+enabled = true
+
+# Summit JSON-RPC endpoint
+# This is used to fetch checkpoint data for each epoch
+rpc_url = "http://localhost:5052"
+
+# ============================================================================
+# Monitoring Configuration
+# ============================================================================
+[monitor]
+# How often to poll reth for the current block number (in seconds)
+# Default: 12 seconds (approximately one Ethereum block time)
+# For faster networks or testing, you can reduce this
+poll_interval_secs = 12
+
+# How long to wait after an RPC failure before retrying (in seconds)
+# This prevents spamming the RPC endpoint if reth is down
+retry_interval_secs = 60
+
+# ============================================================================
+# State Tracking
+# ============================================================================
+[state]
+# Path to state file that tracks the last checkpointed epoch
+# This file is used to resume from the correct point after a restart
+# The file is automatically created and managed by the service
+state_file = "./checkpointer_state.cbor"
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+[logging]
+# Log level options: trace, debug, info, warn, error
+# - trace: Very verbose, includes all debug info
+# - debug: Detailed information useful for debugging
+# - info: General informational messages (recommended for production)
+# - warn: Warning messages only
+# - error: Error messages only
+level = "info"
+
+# Log format options: json, pretty
+# - json: Machine-readable JSON format (good for log aggregation)
+# - pretty: Human-readable format with colors (good for terminals)
+format = "pretty"
+
+# ============================================================================
+# Example Configurations for Different Use Cases
+# ============================================================================
+
+# PRODUCTION SETUP (mainnet)
+# [checkpoint]
+# epoch_blocks = 10000          # Checkpoint every ~33 hours
+# checkpoint_delay_blocks = 5   # Wait 5 blocks for safety
+# output_dir = "/mnt/backups/reth-checkpoints"
+# compact = true
+#
+# [monitor]
+# poll_interval_secs = 12
+#
+# [logging]
+# level = "info"
+# format = "json"
+
+# TESTING SETUP (small epochs for quick testing)
+# [checkpoint]
+# epoch_blocks = 10             # Checkpoint every 10 blocks
+# checkpoint_delay_blocks = 2
+# output_dir = "./test-checkpoints"
+#
+# [monitor]
+# poll_interval_secs = 2        # Check every 2 seconds
+#
+# [logging]
+# level = "debug"
+# format = "pretty"
+
+# DEVELOPMENT SETUP (without Summit)
+# [summit]
+# enabled = false               # Disable Summit integration
+#
+# [logging]
+# level = "debug"

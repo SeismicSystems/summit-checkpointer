@@ -1,0 +1,42 @@
+[package]
+name = "summit-checkpointer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.42", features = ["full"] }
+
+# HTTP client for RPC
+reqwest = { version = "0.12", features = ["json"] }
+
+# JSON-RPC client
+jsonrpsee = { version = "0.24", features = ["http-client", "client-core"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Configuration
+config = "0.14"
+clap = { version = "4.5", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Path handling
+shellexpand = "3.1"
+
+# State serialization
+serde_cbor = "0.11"
+
+# Timestamps
+chrono = { version = "0.4", features = ["serde"] }
+
+# Graceful shutdown
+tokio-util = { version = "0.7", features = ["rt"] }
