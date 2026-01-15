@@ -24,19 +24,14 @@ impl CheckpointExecutor {
     /// Verify that mdbx_copy and reth binaries are available and executable
     pub async fn verify_available(&self) -> Result<()> {
         // Verify mdbx_copy
-        if self.mdbx_copy_path.to_str() != Some("mdbx_copy")
-            && !self.mdbx_copy_path.exists()
-        {
+        if self.mdbx_copy_path.to_str() != Some("mdbx_copy") && !self.mdbx_copy_path.exists() {
             return Err(CheckpointerError::MdbxCopyFailed(format!(
                 "mdbx_copy binary not found at: {:?}",
                 self.mdbx_copy_path
             )));
         }
 
-        let output = Command::new(&self.mdbx_copy_path)
-            .arg("-V")
-            .output()
-            .await;
+        let output = Command::new(&self.mdbx_copy_path).arg("-V").output().await;
 
         match output {
             Ok(out) if out.status.success() => {
@@ -66,7 +61,10 @@ impl CheckpointExecutor {
             )));
         }
 
-        let output = Command::new(&self.reth_path).arg("--version").output().await;
+        let output = Command::new(&self.reth_path)
+            .arg("--version")
+            .output()
+            .await;
 
         match output {
             Ok(out) if out.status.success() => {
@@ -151,11 +149,7 @@ impl CheckpointExecutor {
     }
 
     /// Copy static_files directory from source to destination
-    pub async fn copy_static_files(
-        &self,
-        source_db_dir: &Path,
-        dest_db_dir: &Path,
-    ) -> Result<()> {
+    pub async fn copy_static_files(&self, source_db_dir: &Path, dest_db_dir: &Path) -> Result<()> {
         let source_static = source_db_dir.join("static_files");
         let dest_static = dest_db_dir.join("static_files");
 
@@ -179,10 +173,7 @@ impl CheckpointExecutor {
 
         let duration = start.elapsed();
 
-        tracing::info!(
-            "static_files copied successfully in {:?}",
-            duration
-        );
+        tracing::info!("static_files copied successfully in {:?}", duration);
 
         Ok(())
     }
@@ -203,11 +194,7 @@ impl CheckpointExecutor {
     }
 
     /// Unwind the database to epoch_block - 2 using reth
-    pub async fn unwind_database(
-        &self,
-        checkpoint_dir: &Path,
-        target_block: u64,
-    ) -> Result<()> {
+    pub async fn unwind_database(&self, checkpoint_dir: &Path, target_block: u64) -> Result<()> {
         tracing::info!(
             "Unwinding database at {:?} to block {}",
             checkpoint_dir,
@@ -248,6 +235,81 @@ impl CheckpointExecutor {
             duration,
             stdout.trim()
         );
+
+        Ok(())
+    }
+
+    /// Compress checkpoint directories into a tar.gz archive and cleanup
+    pub async fn compress_and_cleanup(&self, checkpoint_dir: &Path, epoch: u64) -> Result<()> {
+        let archive_name = format!("epoch_{}.tar.gz", epoch);
+        let archive_path = checkpoint_dir.join(&archive_name);
+
+        tracing::info!("Compressing checkpoint to {:?}", archive_name);
+
+        // Build tar command to compress db, static_files, and summit_checkpoint
+        let mut cmd = Command::new("tar");
+        cmd.arg("-czf")
+            .arg(&archive_name)
+            .arg("db")
+            .arg("static_files");
+
+        // Only include summit_checkpoint if it exists
+        let summit_checkpoint_dir = checkpoint_dir.join("summit_checkpoint");
+        if summit_checkpoint_dir.exists() {
+            cmd.arg("summit_checkpoint");
+        }
+
+        // Set working directory to the checkpoint directory
+        cmd.current_dir(checkpoint_dir);
+
+        // Capture stdout/stderr
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let start = std::time::Instant::now();
+
+        // Execute tar
+        let output = cmd.output().await?;
+
+        let duration = start.elapsed();
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(CheckpointerError::CheckpointExecution(format!(
+                "tar compression failed with status {}: {}",
+                output.status, stderr
+            )));
+        }
+
+        tracing::info!("Compression completed in {:?}", duration);
+
+        // Get archive size for logging
+        if let Ok(metadata) = tokio::fs::metadata(&archive_path).await {
+            let size_mb = metadata.len() as f64 / (1024.0 * 1024.0);
+            tracing::info!("Archive size: {:.2} MB", size_mb);
+        }
+
+        // Delete the original directories
+        tracing::info!("Cleaning up uncompressed directories");
+
+        let db_dir = checkpoint_dir.join("db");
+        if db_dir.exists() {
+            tokio::fs::remove_dir_all(&db_dir).await?;
+            tracing::debug!("Deleted db directory");
+        }
+
+        let static_files_dir = checkpoint_dir.join("static_files");
+        if static_files_dir.exists() {
+            tokio::fs::remove_dir_all(&static_files_dir).await?;
+            tracing::debug!("Deleted static_files directory");
+        }
+
+        if summit_checkpoint_dir.exists() {
+            tokio::fs::remove_dir_all(&summit_checkpoint_dir).await?;
+            tracing::debug!("Deleted summit_checkpoint directory");
+        }
+
+        tracing::info!("Cleanup completed, checkpoint stored as {}", archive_name);
 
         Ok(())
     }

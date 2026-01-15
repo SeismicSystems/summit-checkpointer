@@ -18,11 +18,7 @@ pub struct CheckpointManager {
 
 impl CheckpointManager {
     /// Create a new checkpoint manager
-    pub fn new(
-        config: &Config,
-        state_tracker: Arc<StateTracker>,
-        rpc_client: RpcClient,
-    ) -> Self {
+    pub fn new(config: &Config, state_tracker: Arc<StateTracker>, rpc_client: RpcClient) -> Self {
         let executor = CheckpointExecutor::new(
             config.checkpoint.mdbx_copy_path.clone(),
             config.checkpoint.reth_path.clone(),
@@ -58,14 +54,14 @@ impl CheckpointManager {
         tracing::debug!("Created checkpoint directory: {:?}", checkpoint_path);
 
         // Step 1: Copy MDBX database
-        tracing::info!("Step 1/6: Copying MDBX database");
-        let db_dest = checkpoint_path.join("db");
+        tracing::info!("Step 1/7: Copying MDBX database");
+        let db_dest = checkpoint_path.join("db").join("mdbx.dat");
         self.executor
             .copy_mdbx_database(&self.db_path, &db_dest)
             .await?;
 
         // Step 2: Copy static_files directory
-        tracing::info!("Step 2/6: Copying static_files");
+        tracing::info!("Step 2/7: Copying static_files");
         let source_db_dir = self.db_path.parent().ok_or_else(|| {
             crate::error::CheckpointerError::InvalidPath(
                 "Could not determine parent directory of db_path".to_string(),
@@ -76,7 +72,7 @@ impl CheckpointManager {
             .await?;
 
         // Step 3: Delete lock file
-        tracing::info!("Step 3/6: Deleting lock file");
+        tracing::info!("Step 3/7: Deleting lock file");
         self.executor.delete_lock_file(&checkpoint_path).await?;
 
         // Step 4: Unwind database to epoch_block - 2
@@ -85,13 +81,13 @@ impl CheckpointManager {
         } else {
             0
         };
-        tracing::info!("Step 4/6: Unwinding database to block {}", unwind_target);
+        tracing::info!("Step 4/7: Unwinding database to block {}", unwind_target);
         self.executor
             .unwind_database(&checkpoint_path, unwind_target)
             .await?;
 
         // Step 5: Fetch and write Summit checkpoint data
-        tracing::info!("Step 5/6: Fetching Summit checkpoint data");
+        tracing::info!("Step 5/7: Fetching Summit checkpoint data");
         if let Some(summit_client) = &self.rpc_client.summit {
             // Calculate Summit epoch: (block_number / epoch_blocks) - 1
             // Epochs start at 0, so block 200 is epoch 0, block 400 is epoch 1, etc.
@@ -123,17 +119,27 @@ impl CheckpointManager {
                     // Write checkpoint bytes
                     let checkpoint_file = summit_dir.join("checkpoint");
                     tokio::fs::write(&checkpoint_file, &checkpoint_data.checkpoint).await?;
-                    tracing::debug!("Wrote {} bytes to checkpoint file", checkpoint_data.checkpoint.len());
+                    tracing::debug!(
+                        "Wrote {} bytes to checkpoint file",
+                        checkpoint_data.checkpoint.len()
+                    );
 
                     // Write last_block bytes
                     let last_block_file = summit_dir.join("last_block");
                     tokio::fs::write(&last_block_file, &checkpoint_data.last_block).await?;
-                    tracing::debug!("Wrote {} bytes to last_block file", checkpoint_data.last_block.len());
+                    tracing::debug!(
+                        "Wrote {} bytes to last_block file",
+                        checkpoint_data.last_block.len()
+                    );
 
                     // Write finalized_header bytes
                     let finalized_header_file = summit_dir.join("finalized_header");
-                    tokio::fs::write(&finalized_header_file, &checkpoint_data.finalized_header).await?;
-                    tracing::debug!("Wrote {} bytes to finalized_header file", checkpoint_data.finalized_header.len());
+                    tokio::fs::write(&finalized_header_file, &checkpoint_data.finalized_header)
+                        .await?;
+                    tracing::debug!(
+                        "Wrote {} bytes to finalized_header file",
+                        checkpoint_data.finalized_header.len()
+                    );
 
                     tracing::info!("Summit checkpoint data written successfully");
                 }
@@ -147,11 +153,17 @@ impl CheckpointManager {
         }
 
         // Step 6: Write metadata
-        tracing::info!("Step 6/6: Writing metadata");
+        tracing::info!("Step 6/7: Writing metadata");
         let metadata = CheckpointMetadata::new(epoch, block_number);
         let metadata_path = checkpoint_path.join("metadata.json");
         let metadata_json = serde_json::to_string_pretty(&metadata)?;
         tokio::fs::write(metadata_path, metadata_json).await?;
+
+        // Step 7: Compress and cleanup
+        tracing::info!("Step 7/7: Compressing checkpoint and cleaning up");
+        self.executor
+            .compress_and_cleanup(&checkpoint_path, epoch)
+            .await?;
 
         // Update state tracker
         self.state_tracker
