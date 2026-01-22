@@ -39,7 +39,7 @@ impl CheckpointManager {
         let start = std::time::Instant::now();
 
         // Generate checkpoint directory name
-        let checkpoint_name = format!("epoch_{}_block_{}", epoch, block_number);
+        let checkpoint_name = format!("epoch_{}", epoch);
         let checkpoint_path = self.config.output_dir.join(&checkpoint_name);
 
         tracing::info!(

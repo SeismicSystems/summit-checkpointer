@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -8,6 +8,7 @@ mod config;
 mod error;
 mod monitor;
 mod rpc;
+mod server;
 mod state;
 
 use checkpoint::CheckpointManager;
@@ -16,6 +17,8 @@ use error::Result;
 use monitor::BlockMonitor;
 use rpc::RpcClient;
 use state::StateTracker;
+
+use crate::server::server::RpcServer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -79,9 +82,13 @@ async fn main() -> Result<()> {
     );
 
     tracing::info!("Block monitor initialized, starting main loop");
+    let addr: SocketAddr = "0.0.0.0:7878".parse().unwrap();
 
+    let rpc_handle = tokio::spawn(RpcServer::new().start_server(addr));
     // Run until cancelled
     monitor.run_until_cancelled(shutdown_token).await?;
+
+    rpc_handle.abort();
 
     // Cleanup: save state
     tracing::info!("Saving final state...");
@@ -94,9 +101,8 @@ async fn main() -> Result<()> {
 
 /// Initialize logging with tracing subscriber
 fn init_logging(config: &Config) -> Result<()> {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(&config.logging.level)
-    });
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
 
     let subscriber = tracing_subscriber::registry().with(env_filter);
 
