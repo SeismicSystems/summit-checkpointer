@@ -10,6 +10,7 @@ pub mod state;
 pub use server::api::CheckpointerRpcClient;
 
 // Re-export jsonrpsee client utilities for constructing a CheckpointerRpcClient
+pub use jsonrpsee::core::ClientError;
 pub use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 
 // Re-export commonly used types
