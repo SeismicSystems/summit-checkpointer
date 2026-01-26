@@ -3,22 +3,9 @@ use std::{net::SocketAddr, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-mod checkpoint;
-mod config;
-mod error;
-mod monitor;
-mod rpc;
-mod server;
-mod state;
-
-use checkpoint::CheckpointManager;
-use config::{Cli, Config};
-use error::Result;
-use monitor::BlockMonitor;
-use rpc::RpcClient;
-use state::StateTracker;
-
-use crate::server::server::RpcServer;
+use summit_checkpointer::{
+    BlockMonitor, CheckpointManager, Cli, Config, Result, RpcClient, RpcServer, StateTracker,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
