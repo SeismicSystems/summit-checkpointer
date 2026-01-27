@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
-use crate::config::Config;
-use crate::error::Result;
-use crate::rpc::{RethRpcClient, SummitRpcClient};
+use crate::{
+    config::Config,
+    error::Result,
+    rpc::{RethRpcClient, SummitRpcClient},
+};
 
 /// Combined RPC client wrapper
 #[derive(Clone)]

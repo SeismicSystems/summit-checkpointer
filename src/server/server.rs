@@ -16,15 +16,13 @@ pub const DATA_DISK_DIR: &str = "/home/ubuntu/checkpoints";
 pub struct RpcServer;
 
 impl RpcServer {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self
     }
 
     pub async fn start_server(self, addr: SocketAddr) {
-        let server = ServerBuilder::default()
-            .build(addr)
-            .await
-            .expect("Failed to start rpc");
+        let server = ServerBuilder::default().build(addr).await.expect("Failed to start rpc");
 
         let handle = server.start(self.into_rpc());
 
@@ -49,10 +47,7 @@ impl CheckpointerRpcServer for RpcServer {
             .map_err(|e| string_to_rpc_error(format!("Failed to download snapshot: {}", e)))?;
 
         if !response.status().is_success() {
-            return Err(string_to_rpc_error(format!(
-                "HTTP error: {}",
-                response.status()
-            )));
+            return Err(string_to_rpc_error(format!("HTTP error: {}", response.status())));
         }
 
         let bytes = response
@@ -64,9 +59,8 @@ impl CheckpointerRpcServer for RpcServer {
         let filename = format!("{SNAPSHOT_FILE_PREFIX}{epoch}.tar.lz4");
 
         // Write to file
-        let mut file = tokio::fs::File::create(format!("{DATA_DISK_DIR}/{filename}"))
-            .await
-            .map_err(|e| {
+        let mut file =
+            tokio::fs::File::create(format!("{DATA_DISK_DIR}/{filename}")).await.map_err(|e| {
                 string_to_rpc_error(format!("Failed to create file {}: {}", filename, e))
             })?;
 
@@ -78,7 +72,7 @@ impl CheckpointerRpcServer for RpcServer {
     }
 
     /// Restores from an encrypted snapshot
-    async fn restore_from_encrypted_snapshot(&self, epoch: u64) -> RpcResult<()> {
+    async fn restore_from_encrypted_snapshot(&self, _epoch: u64) -> RpcResult<()> {
         todo!()
     }
 
@@ -89,16 +83,11 @@ impl CheckpointerRpcServer for RpcServer {
         );
 
         if !fs::exists(&snapshot_path).unwrap_or_default() {
-            return Err(string_to_rpc_error(format!(
-                "No snapshot for epoch {epoch} stored"
-            )));
+            return Err(string_to_rpc_error(format!("No snapshot for epoch {epoch} stored")));
         }
 
         fs::read(snapshot_path).map_err(|e| {
-            string_to_rpc_error(format!(
-                "Failed to read snapshot for epoch {}: {}",
-                epoch, e
-            ))
+            string_to_rpc_error(format!("Failed to read snapshot for epoch {}: {}", epoch, e))
         })
     }
 
@@ -111,6 +100,7 @@ impl CheckpointerRpcServer for RpcServer {
         })?;
 
         let mut epochs = Vec::new();
+        #[allow(clippy::useless_format)]
         let prefix = format!("{SNAPSHOT_FILE_PREFIX}");
 
         for entry in entries {
