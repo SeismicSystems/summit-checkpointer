@@ -16,6 +16,7 @@ pub const DATA_DISK_DIR: &str = "/home/ubuntu/checkpoints";
 pub struct RpcServer;
 
 impl RpcServer {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self
     }
@@ -99,6 +100,7 @@ impl CheckpointerRpcServer for RpcServer {
         })?;
 
         let mut epochs = Vec::new();
+        #[allow(clippy::useless_format)]
         let prefix = format!("{SNAPSHOT_FILE_PREFIX}");
 
         for entry in entries {

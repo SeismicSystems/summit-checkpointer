@@ -73,6 +73,7 @@ impl CheckpointManager {
         self.executor.delete_lock_file(&checkpoint_path).await?;
 
         // Step 4: Unwind database to epoch_block - 2
+        #[allow(clippy::implicit_saturating_sub)]
         let unwind_target = if block_number >= 2 { block_number - 2 } else { 0 };
         tracing::info!("Step 4/7: Unwinding database to block {}", unwind_target);
         self.executor.unwind_database(&checkpoint_path, unwind_target).await?;

@@ -220,6 +220,7 @@ impl Config {
 }
 
 /// Expand tilde and environment variables in paths
+#[allow(clippy::ptr_arg)]
 fn expand_path(path: &PathBuf) -> Result<PathBuf> {
     let path_str = path
         .to_str()
