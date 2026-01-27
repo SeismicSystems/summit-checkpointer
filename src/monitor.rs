@@ -1,11 +1,12 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
-use crate::checkpoint::CheckpointManager;
-use crate::config::MonitorConfig;
-use crate::error::{CheckpointerError, Result};
-use crate::rpc::RpcClient;
+use crate::{
+    checkpoint::CheckpointManager,
+    config::MonitorConfig,
+    error::{CheckpointerError, Result},
+    rpc::RpcClient,
+};
 
 /// Block monitor that watches for epoch boundaries and triggers checkpoints
 pub struct BlockMonitor {
@@ -25,13 +26,7 @@ impl BlockMonitor {
         epoch_blocks: u64,
         checkpoint_delay_blocks: u64,
     ) -> Self {
-        Self {
-            rpc_client,
-            checkpoint_manager,
-            config,
-            epoch_blocks,
-            checkpoint_delay_blocks,
-        }
+        Self { rpc_client, checkpoint_manager, config, epoch_blocks, checkpoint_delay_blocks }
     }
 
     /// Run the monitoring loop until cancelled
@@ -101,9 +96,7 @@ impl BlockMonitor {
                 );
 
                 // Create checkpoint for the epoch block, not the current block
-                self.checkpoint_manager
-                    .create_checkpoint(current_epoch, epoch_block)
-                    .await?;
+                self.checkpoint_manager.create_checkpoint(current_epoch, epoch_block).await?;
             } else {
                 let blocks_waited = current_block - epoch_block;
                 let blocks_to_wait = self.checkpoint_delay_blocks - blocks_waited;

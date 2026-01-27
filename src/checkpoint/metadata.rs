@@ -16,10 +16,6 @@ pub struct CheckpointMetadata {
 impl CheckpointMetadata {
     /// Create new checkpoint metadata
     pub fn new(epoch: u64, block_number: u64) -> Self {
-        Self {
-            epoch,
-            block_number,
-            timestamp: chrono::Utc::now(),
-        }
+        Self { epoch, block_number, timestamp: chrono::Utc::now() }
     }
 }
