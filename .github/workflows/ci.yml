@@ -32,15 +32,15 @@ jobs:
         run: cargo +nightly fmt --all --check
 
       - name: Cargo check (warnings as errors)
-        run: cargo check --all-targets
+        run: cargo +stable check --all-targets
         env:
           RUSTFLAGS: "-D warnings"
 
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo +stable clippy --all-targets -- -D warnings
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo +stable build --verbose
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo +stable test --verbose
