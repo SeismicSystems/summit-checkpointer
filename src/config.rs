@@ -128,9 +128,7 @@ impl Config {
 
         // Override with environment variables (e.g., CHECKPOINTER_RETH_RPC_URL)
         builder = builder.add_source(
-            config::Environment::with_prefix("CHECKPOINTER")
-                .separator("_")
-                .try_parsing(true),
+            config::Environment::with_prefix("CHECKPOINTER").separator("_").try_parsing(true),
         );
 
         // Build the config
@@ -227,9 +225,8 @@ fn expand_path(path: &PathBuf) -> Result<PathBuf> {
         .to_str()
         .ok_or_else(|| CheckpointerError::InvalidPath("Invalid UTF-8 in path".to_string()))?;
 
-    let expanded = shellexpand::full(path_str).map_err(|e| {
-        CheckpointerError::InvalidPath(format!("Failed to expand path: {}", e))
-    })?;
+    let expanded = shellexpand::full(path_str)
+        .map_err(|e| CheckpointerError::InvalidPath(format!("Failed to expand path: {}", e)))?;
 
     Ok(PathBuf::from(expanded.as_ref()))
 }

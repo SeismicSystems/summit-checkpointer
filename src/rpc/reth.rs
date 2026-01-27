@@ -1,5 +1,7 @@
-use jsonrpsee::core::client::ClientT;
-use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
+use jsonrpsee::{
+    core::client::ClientT,
+    http_client::{HttpClient, HttpClientBuilder},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -12,8 +14,7 @@ pub struct RethRpcClient {
 impl RethRpcClient {
     /// Create a new Reth RPC client
     pub fn new(url: &str) -> Result<Self> {
-        let client = HttpClientBuilder::default()
-            .build(url)?;
+        let client = HttpClientBuilder::default().build(url)?;
 
         tracing::info!("Reth RPC client initialized: {}", url);
         Ok(Self { client })
@@ -40,10 +41,7 @@ impl RethRpcClient {
         params.insert(block_param)?;
         params.insert(false)?; // Don't include full transactions
 
-        let response: BlockInfo = self
-            .client
-            .request("eth_getBlockByNumber", params)
-            .await?;
+        let response: BlockInfo = self.client.request("eth_getBlockByNumber", params).await?;
 
         Ok(response)
     }

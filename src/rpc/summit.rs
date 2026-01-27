@@ -14,10 +14,7 @@ impl SummitRpcClient {
     /// Create a new Summit RPC client
     pub fn new(url: &str) -> Result<Self> {
         tracing::info!("Summit RPC client initialized: {}", url);
-        Ok(Self {
-            client: Client::new(),
-            base_url: url.to_string(),
-        })
+        Ok(Self { client: Client::new(), base_url: url.to_string() })
     }
 
     /// Get checkpoint data from Summit for a specific epoch
@@ -33,17 +30,10 @@ impl SummitRpcClient {
         });
 
         // Send request
-        let response = self
-            .client
-            .post(&self.base_url)
-            .json(&request)
-            .send()
-            .await?;
+        let response = self.client.post(&self.base_url).json(&request).send().await?;
 
         if !response.status().is_success() {
-            return Err(CheckpointerError::Http(
-                response.error_for_status().unwrap_err(),
-            ));
+            return Err(CheckpointerError::Http(response.error_for_status().unwrap_err()));
         }
 
         // Parse JSON-RPC response

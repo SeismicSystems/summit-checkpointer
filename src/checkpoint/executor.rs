@@ -1,5 +1,7 @@
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 use tokio::process::Command;
 
 use crate::error::{CheckpointerError, Result};
@@ -14,11 +16,7 @@ pub struct CheckpointExecutor {
 impl CheckpointExecutor {
     /// Create a new checkpoint executor
     pub fn new(mdbx_copy_path: PathBuf, reth_path: PathBuf, compact: bool) -> Self {
-        Self {
-            mdbx_copy_path,
-            reth_path,
-            compact,
-        }
+        Self { mdbx_copy_path, reth_path, compact }
     }
 
     /// Verify that mdbx_copy and reth binaries are available and executable
@@ -61,10 +59,7 @@ impl CheckpointExecutor {
             )));
         }
 
-        let output = Command::new(&self.reth_path)
-            .arg("--version")
-            .output()
-            .await;
+        let output = Command::new(&self.reth_path).arg("--version").output().await;
 
         match output {
             Ok(out) if out.status.success() => {
@@ -160,11 +155,7 @@ impl CheckpointExecutor {
             )));
         }
 
-        tracing::info!(
-            "Copying static_files from {:?} to {:?}",
-            source_static,
-            dest_static
-        );
+        tracing::info!("Copying static_files from {:?} to {:?}", source_static, dest_static);
 
         let start = std::time::Instant::now();
 
@@ -195,11 +186,7 @@ impl CheckpointExecutor {
 
     /// Unwind the database to epoch_block - 2 using reth
     pub async fn unwind_database(&self, checkpoint_dir: &Path, target_block: u64) -> Result<()> {
-        tracing::info!(
-            "Unwinding database at {:?} to block {}",
-            checkpoint_dir,
-            target_block
-        );
+        tracing::info!("Unwinding database at {:?} to block {}", checkpoint_dir, target_block);
 
         let mut cmd = Command::new(&self.reth_path);
         cmd.arg("stage")
@@ -230,11 +217,7 @@ impl CheckpointExecutor {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        tracing::info!(
-            "reth unwind completed successfully in {:?}: {}",
-            duration,
-            stdout.trim()
-        );
+        tracing::info!("reth unwind completed successfully in {:?}: {}", duration, stdout.trim());
 
         Ok(())
     }
@@ -248,10 +231,7 @@ impl CheckpointExecutor {
 
         // Build tar command to compress db, static_files, and summit_checkpoint
         let mut cmd = Command::new("tar");
-        cmd.arg("-czf")
-            .arg(&archive_name)
-            .arg("db")
-            .arg("static_files");
+        cmd.arg("-czf").arg(&archive_name).arg("db").arg("static_files");
 
         // Only include summit_checkpoint if it exists
         let summit_checkpoint_dir = checkpoint_dir.join("summit_checkpoint");

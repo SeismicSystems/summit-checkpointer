@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 use tokio::sync::RwLock;
 
 use crate::error::Result;
@@ -47,10 +46,7 @@ impl StateTracker {
             state.last_checkpoint_block
         );
 
-        Ok(Self {
-            state: Arc::new(RwLock::new(state)),
-            path: path.to_path_buf(),
-        })
+        Ok(Self { state: Arc::new(RwLock::new(state)), path: path.to_path_buf() })
     }
 
     /// Get last checkpointed epoch
@@ -73,11 +69,7 @@ impl StateTracker {
         // Persist to disk immediately
         self.save_internal(&state).await?;
 
-        tracing::debug!(
-            "State updated: epoch={}, block={}",
-            epoch,
-            block
-        );
+        tracing::debug!("State updated: epoch={}, block={}", epoch, block);
 
         Ok(())
     }

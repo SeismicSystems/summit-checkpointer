@@ -33,11 +33,8 @@ async fn main() -> Result<()> {
     let rpc_client = RpcClient::new(&config)?;
 
     // Create checkpoint manager
-    let checkpoint_manager = Arc::new(CheckpointManager::new(
-        &config,
-        state_tracker.clone(),
-        rpc_client.clone(),
-    ));
+    let checkpoint_manager =
+        Arc::new(CheckpointManager::new(&config, state_tracker.clone(), rpc_client.clone()));
 
     // Verify checkpoint tools are available
     tracing::info!("Verifying checkpoint tools (mdbx_copy, reth)...");

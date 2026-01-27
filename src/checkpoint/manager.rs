@@ -1,11 +1,12 @@
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use crate::checkpoint::{CheckpointExecutor, CheckpointMetadata};
-use crate::config::{CheckpointConfig, Config};
-use crate::error::Result;
-use crate::rpc::RpcClient;
-use crate::state::StateTracker;
+use crate::{
+    checkpoint::{CheckpointExecutor, CheckpointMetadata},
+    config::{CheckpointConfig, Config},
+    error::Result,
+    rpc::RpcClient,
+    state::StateTracker,
+};
 
 /// Checkpoint manager orchestrates checkpoint creation
 pub struct CheckpointManager {
@@ -56,9 +57,7 @@ impl CheckpointManager {
         // Step 1: Copy MDBX database
         tracing::info!("Step 1/7: Copying MDBX database");
         let db_dest = checkpoint_path.join("db").join("mdbx.dat");
-        self.executor
-            .copy_mdbx_database(&self.db_path, &db_dest)
-            .await?;
+        self.executor.copy_mdbx_database(&self.db_path, &db_dest).await?;
 
         // Step 2: Copy static_files directory
         tracing::info!("Step 2/7: Copying static_files");
@@ -67,24 +66,16 @@ impl CheckpointManager {
                 "Could not determine parent directory of db_path".to_string(),
             )
         })?;
-        self.executor
-            .copy_static_files(source_db_dir, &checkpoint_path)
-            .await?;
+        self.executor.copy_static_files(source_db_dir, &checkpoint_path).await?;
 
         // Step 3: Delete lock file
         tracing::info!("Step 3/7: Deleting lock file");
         self.executor.delete_lock_file(&checkpoint_path).await?;
 
         // Step 4: Unwind database to epoch_block - 2
-        let unwind_target = if block_number >= 2 {
-            block_number - 2
-        } else {
-            0
-        };
+        let unwind_target = if block_number >= 2 { block_number - 2 } else { 0 };
         tracing::info!("Step 4/7: Unwinding database to block {}", unwind_target);
-        self.executor
-            .unwind_database(&checkpoint_path, unwind_target)
-            .await?;
+        self.executor.unwind_database(&checkpoint_path, unwind_target).await?;
 
         // Step 5: Fetch and write Summit checkpoint data
         tracing::info!("Step 5/7: Fetching Summit checkpoint data");
@@ -161,14 +152,10 @@ impl CheckpointManager {
 
         // Step 7: Compress and cleanup
         tracing::info!("Step 7/7: Compressing checkpoint and cleaning up");
-        self.executor
-            .compress_and_cleanup(&checkpoint_path, epoch)
-            .await?;
+        self.executor.compress_and_cleanup(&checkpoint_path, epoch).await?;
 
         // Update state tracker
-        self.state_tracker
-            .update_last_checkpoint(epoch, block_number)
-            .await?;
+        self.state_tracker.update_last_checkpoint(epoch, block_number).await?;
 
         let duration = start.elapsed();
         tracing::info!(
