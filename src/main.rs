@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
     );
 
     tracing::info!("Block monitor initialized, starting main loop");
-    let addr: SocketAddr = "0.0.0.0:7878".parse().unwrap();
+    let addr: SocketAddr = format!("0.0.0.0:{}", cli.port).parse().unwrap();
 
     let rpc_handle = tokio::spawn(RpcServer::new().start_server(addr));
     // Run until cancelled
