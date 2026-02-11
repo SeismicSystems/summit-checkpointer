@@ -98,6 +98,9 @@ pub struct Cli {
     /// Override log format (json, pretty)
     #[arg(long)]
     pub log_format: Option<String>,
+
+    #[arg(short = 'p', long, default_value = "42069")]
+    pub port: u16,
 }
 
 impl Config {
