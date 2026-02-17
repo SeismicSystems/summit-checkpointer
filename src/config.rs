@@ -29,6 +29,7 @@ pub struct CheckpointConfig {
     pub compact: bool,
     pub mdbx_copy_path: PathBuf,
     pub reth_path: PathBuf,
+    pub max_snapshots: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +84,10 @@ pub struct Cli {
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
 
+    /// Maximum number of snapshots to retain (unlimited if not set)
+    #[arg(long)]
+    pub max_snapshots: Option<u64>,
+
     /// Override mdbx_copy binary path
     #[arg(long)]
     pub mdbx_copy_path: Option<PathBuf>,
@@ -116,6 +121,7 @@ impl Config {
             .set_default("checkpoint.compact", true)?
             .set_default("checkpoint.mdbx_copy_path", "mdbx_copy")?
             .set_default("checkpoint.reth_path", "reth")?
+            .set_default("checkpoint.max_snapshots", None::<u64>)?
             .set_default("summit.enabled", false)?
             .set_default("summit.rpc_url", "http://localhost:5052")?
             .set_default("monitor.poll_interval_secs", 12)?
@@ -152,6 +158,9 @@ impl Config {
         }
         if let Some(output_dir) = &cli.output_dir {
             config.checkpoint.output_dir = output_dir.clone();
+        }
+        if let Some(max_snapshots) = cli.max_snapshots {
+            config.checkpoint.max_snapshots = Some(max_snapshots);
         }
         if let Some(mdbx_copy_path) = &cli.mdbx_copy_path {
             config.checkpoint.mdbx_copy_path = mdbx_copy_path.clone();

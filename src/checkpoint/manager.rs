@@ -157,12 +157,52 @@ impl CheckpointManager {
         // Update state tracker
         self.state_tracker.update_last_checkpoint(epoch, block_number).await?;
 
+        // Cleanup old snapshots if retention limit is set
+        if let Err(e) = self.cleanup_old_snapshots().await {
+            tracing::warn!("Failed to cleanup old snapshots: {}", e);
+        }
+
         let duration = start.elapsed();
         tracing::info!(
             "Checkpoint completed successfully: {} (took {:?})",
             checkpoint_name,
             duration
         );
+
+        Ok(())
+    }
+
+    /// Remove oldest snapshot directories when count exceeds the configured max_snapshots limit.
+    async fn cleanup_old_snapshots(&self) -> Result<()> {
+        let max = match self.config.max_snapshots {
+            Some(max) => max as usize,
+            None => return Ok(()),
+        };
+
+        let mut entries = tokio::fs::read_dir(&self.config.output_dir).await?;
+        let mut snapshots: Vec<(u64, PathBuf)> = Vec::new();
+
+        while let Some(entry) = entries.next_entry().await? {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if let Some(epoch_str) = name_str.strip_prefix("epoch_") {
+                if let Ok(epoch) = epoch_str.parse::<u64>() {
+                    snapshots.push((epoch, entry.path()));
+                }
+            }
+        }
+
+        if snapshots.len() <= max {
+            return Ok(());
+        }
+
+        snapshots.sort_by_key(|(epoch, _)| *epoch);
+        let to_remove = snapshots.len() - max;
+
+        for (epoch, path) in snapshots.into_iter().take(to_remove) {
+            tracing::info!("Removing old snapshot: epoch_{}", epoch);
+            tokio::fs::remove_dir_all(&path).await?;
+        }
 
         Ok(())
     }
