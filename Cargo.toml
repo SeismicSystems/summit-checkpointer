@@ -39,4 +39,13 @@ serde_cbor = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Graceful shutdown
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
+
+# HTTP streaming / Tower service
+hyper = { version = "1" }
+http-body = "1"
+http-body-util = "0.1"
+http = "1"
+bytes = "1"
+tower = { version = "0.5", features = ["util"] }
+futures-util = "0.3"

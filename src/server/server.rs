@@ -1,17 +1,24 @@
-use std::{fs, net::SocketAddr, path::Path};
+use std::{convert::Infallible, fs, net::SocketAddr, path::Path};
 
+use futures_util::StreamExt;
+use http_body::Frame;
+use http_body_util::StreamBody;
+use hyper::body::Incoming;
 use jsonrpsee::{
     core::{async_trait, RpcResult},
-    server::ServerBuilder,
+    server::{serve_with_graceful_shutdown, stop_channel, HttpBody, ServerBuilder, ServerHandle},
     types::{ErrorCode, ErrorObjectOwned},
 };
 use tokio::io::AsyncWriteExt as _;
+use tokio::net::TcpListener;
+use tokio_util::io::ReaderStream;
+use tower::Service;
 use tracing::info;
 
 use crate::server::api::CheckpointerRpcServer;
 
 pub const SNAPSHOT_FILE_PREFIX: &str = "epoch_";
-pub const DATA_DISK_DIR: &str = "/home/ubuntu/checkpoints";
+pub const DATA_DISK_DIR: &str = "/persistent/checkpoints";
 
 pub struct RpcServer;
 
@@ -21,15 +28,124 @@ impl RpcServer {
         Self
     }
 
-    pub async fn start_server(self, addr: SocketAddr) {
-        let server = ServerBuilder::default().build(addr).await.expect("Failed to start rpc");
+    pub async fn start_server(self, addr: SocketAddr) -> ServerHandle {
+        let listener = TcpListener::bind(addr).await.expect("Failed to bind RPC server");
+        let (stop_handle, server_handle) = stop_channel();
 
-        let handle = server.start(self.into_rpc());
+        let rpc_module = self.into_rpc();
+        let svc_builder = ServerBuilder::default().to_service_builder();
+
+        tokio::spawn(async move {
+            loop {
+                let sock = tokio::select! {
+                    res = listener.accept() => {
+                        match res {
+                            Ok((stream, _)) => stream,
+                            Err(e) => {
+                                tracing::error!("TCP accept error: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    _ = stop_handle.clone().shutdown() => break,
+                };
+
+                let rpc_module = rpc_module.clone();
+                let svc_builder = svc_builder.clone();
+                let conn_stop = stop_handle.clone();
+                let shutdown_stop = stop_handle.clone();
+
+                let svc = tower::service_fn(move |req: http::Request<Incoming>| {
+                    let rpc_module = rpc_module.clone();
+                    let stop_handle = conn_stop.clone();
+                    let svc_builder = svc_builder.clone();
+
+                    async move {
+                        if req.method() == http::Method::GET {
+                            if let Some(epoch) = parse_snapshot_path(req.uri().path()) {
+                                return Ok::<_, Infallible>(handle_snapshot_stream(epoch).await);
+                            }
+                        }
+
+                        let mut jsonrpc_svc = svc_builder.build(rpc_module, stop_handle);
+                        Ok(match jsonrpc_svc.call(req).await {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                tracing::error!("JSON-RPC service error: {e}");
+                                http::Response::builder()
+                                    .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                                    .body(HttpBody::from(format!("Internal error: {e}")))
+                                    .expect("response build")
+                            }
+                        })
+                    }
+                });
+
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        serve_with_graceful_shutdown(sock, svc, shutdown_stop.shutdown()).await
+                    {
+                        tracing::error!("Connection error: {e}");
+                    }
+                });
+            }
+        });
 
         info!("JSON-RPC Server started at {}", addr);
-
-        handle.stopped().await;
+        server_handle
     }
+}
+
+fn parse_snapshot_path(path: &str) -> Option<u64> {
+    path.strip_prefix("/snapshots/").and_then(|rest| rest.trim_end_matches('/').parse::<u64>().ok())
+}
+
+async fn handle_snapshot_stream(epoch: u64) -> http::Response<HttpBody> {
+    let snapshot_path = format!(
+        "{DATA_DISK_DIR}/{SNAPSHOT_FILE_PREFIX}{epoch}/{SNAPSHOT_FILE_PREFIX}{epoch}.tar.gz",
+    );
+
+    let file = match tokio::fs::File::open(&snapshot_path).await {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return http::Response::builder()
+                .status(http::StatusCode::NOT_FOUND)
+                .body(HttpBody::from(format!("No snapshot for epoch {epoch}")))
+                .expect("response build");
+        }
+        Err(e) => {
+            return http::Response::builder()
+                .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                .body(HttpBody::from(format!("Failed to open snapshot: {e}")))
+                .expect("response build");
+        }
+    };
+
+    let metadata = match file.metadata().await {
+        Ok(m) => m,
+        Err(e) => {
+            return http::Response::builder()
+                .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                .body(HttpBody::from(format!("Failed to read file metadata: {e}")))
+                .expect("response build");
+        }
+    };
+    let file_size = metadata.len();
+
+    let reader = ReaderStream::with_capacity(file, 1024 * 1024);
+    let stream = reader.map(|result| result.map(Frame::data));
+    let body = HttpBody::new(StreamBody::new(stream));
+
+    http::Response::builder()
+        .status(http::StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, "application/gzip")
+        .header(http::header::CONTENT_LENGTH, file_size)
+        .header(
+            http::header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"epoch_{epoch}.tar.gz\""),
+        )
+        .body(body)
+        .expect("response build")
 }
 
 #[async_trait]
@@ -78,8 +194,13 @@ impl CheckpointerRpcServer for RpcServer {
 
     /// Get an encrypted snapshot from this servers database
     async fn get_encrypted_snapshot(&self, epoch: u64) -> RpcResult<Vec<u8>> {
+        tracing::warn!(
+            epoch,
+            "get_encrypted_snapshot is deprecated; use GET /snapshots/{{epoch}} for streaming"
+        );
+
         let snapshot_path = format!(
-            "{DATA_DISK_DIR}/{SNAPSHOT_FILE_PREFIX}{epoch}/{SNAPSHOT_FILE_PREFIX}{epoch}.tar.lz4",
+            "{DATA_DISK_DIR}/{SNAPSHOT_FILE_PREFIX}{epoch}/{SNAPSHOT_FILE_PREFIX}{epoch}.tar.gz",
         );
 
         if !fs::exists(&snapshot_path).unwrap_or_default() {
