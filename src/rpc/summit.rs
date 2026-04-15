@@ -1,8 +1,9 @@
+use crate::error::{CheckpointerError, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-
-use crate::error::{CheckpointerError, Result};
+use ssz::Decode;
+use summit_types::Block;
 
 /// Summit consensus client RPC client
 pub struct SummitRpcClient {
@@ -15,6 +16,121 @@ impl SummitRpcClient {
     pub fn new(url: &str) -> Result<Self> {
         tracing::info!("Summit RPC client initialized: {}", url);
         Ok(Self { client: Client::new(), base_url: url.to_string() })
+    }
+
+    /// Get the latest finalized epoch number from Summit
+    pub async fn get_latest_epoch(&self) -> Result<u64> {
+        tracing::debug!("Fetching latest Summit epoch");
+
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "getLatestEpoch",
+            "params": [],
+            "id": 1
+        });
+
+        let response = self.client.post(&self.base_url).json(&request).send().await?;
+
+        if !response.status().is_success() {
+            return Err(CheckpointerError::Http(response.error_for_status().unwrap_err()));
+        }
+
+        let rpc_response: JsonRpcResponse<u64> = response.json().await?;
+
+        if let Some(error) = rpc_response.error {
+            return Err(CheckpointerError::CheckpointExecution(format!(
+                "Summit RPC error: {} (code: {})",
+                error.message, error.code
+            )));
+        }
+
+        rpc_response.result.ok_or_else(|| {
+            CheckpointerError::CheckpointExecution(
+                "Summit RPC returned no result or error".to_string(),
+            )
+        })
+    }
+
+    /// Get the current epoch length (in blocks) from Summit
+    pub async fn get_epoch_length(&self) -> Result<u64> {
+        tracing::debug!("Fetching Summit epoch length");
+
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "getEpochLength",
+            "params": [],
+            "id": 1
+        });
+
+        let response = self.client.post(&self.base_url).json(&request).send().await?;
+
+        if !response.status().is_success() {
+            return Err(CheckpointerError::Http(response.error_for_status().unwrap_err()));
+        }
+
+        let rpc_response: JsonRpcResponse<u64> = response.json().await?;
+
+        if let Some(error) = rpc_response.error {
+            return Err(CheckpointerError::CheckpointExecution(format!(
+                "Summit RPC error: {} (code: {})",
+                error.message, error.code
+            )));
+        }
+
+        rpc_response.result.ok_or_else(|| {
+            CheckpointerError::CheckpointExecution(
+                "Summit RPC returned no result or error".to_string(),
+            )
+        })
+    }
+
+    /// Get the most recent finalized checkpoint from Summit. The returned payload's
+    /// `last_block` field is SSZ-encoded and can be decoded with
+    /// `summit_types::Block::from_ssz_bytes`.
+    pub async fn get_latest_checkpoint(&self) -> Result<CheckpointRes> {
+        tracing::debug!("Fetching latest Summit checkpoint");
+
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "getLatestCheckpoint",
+            "params": [],
+            "id": 1
+        });
+
+        let response = self.client.post(&self.base_url).json(&request).send().await?;
+
+        if !response.status().is_success() {
+            return Err(CheckpointerError::Http(response.error_for_status().unwrap_err()));
+        }
+
+        let rpc_response: JsonRpcResponse<CheckpointRes> = response.json().await?;
+
+        if let Some(error) = rpc_response.error {
+            return Err(CheckpointerError::CheckpointExecution(format!(
+                "Summit RPC error: {} (code: {})",
+                error.message, error.code
+            )));
+        }
+
+        rpc_response.result.ok_or_else(|| {
+            CheckpointerError::CheckpointExecution(
+                "Summit RPC returned no result or error".to_string(),
+            )
+        })
+    }
+
+    /// Get the latest finalized checkpoint and decode its `last_block` to return
+    /// `(epoch, last_block_height)` — the authoritative epoch number and the height of
+    /// the last block included in that epoch's finalized checkpoint.
+    pub async fn get_latest_epoch_last_block(&self) -> Result<(u64, u64)> {
+        let res = self.get_latest_checkpoint().await?;
+        let block = Block::from_ssz_bytes(&res.last_block).map_err(|e| {
+            CheckpointerError::CheckpointExecution(format!(
+                "Failed to SSZ-decode summit last_block: {:?}",
+                e
+            ))
+        })?;
+        Ok((res.epoch, block.header.height))
     }
 
     /// Get checkpoint data from Summit for a specific epoch
