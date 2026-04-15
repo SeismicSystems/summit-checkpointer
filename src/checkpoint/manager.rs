@@ -211,4 +211,79 @@ impl CheckpointManager {
     pub async fn verify_checkpoint_tools(&self) -> Result<()> {
         self.executor.verify_available().await
     }
+
+    /// Check whether a compressed checkpoint archive already exists on disk for the given epoch.
+    pub fn checkpoint_exists(&self, epoch: u64) -> bool {
+        self.config
+            .output_dir
+            .join(format!("epoch_{}", epoch))
+            .join(format!("epoch_{}.tar.gz", epoch))
+            .exists()
+    }
+
+    /// Ensure a checkpoint exists for the latest completed epoch. Intended to be called once
+    /// at startup so we don't have to wait for the next epoch boundary to take a checkpoint.
+    ///
+    /// - If the state tracker or disk already shows a checkpoint for the latest epoch, skip.
+    /// - If the latest epoch boundary was crossed but the configured delay hasn't elapsed yet, skip
+    ///   and let the block monitor handle it on its next poll.
+    /// - Otherwise, create the checkpoint immediately.
+    pub async fn ensure_latest_checkpoint(&self) -> Result<()> {
+        let epoch_blocks = self.config.epoch_blocks;
+        let checkpoint_delay_blocks = self.config.checkpoint_delay_blocks;
+
+        let current_block = self.rpc_client.reth.get_block_number().await?;
+        let current_epoch = current_block / epoch_blocks;
+
+        if current_epoch == 0 {
+            tracing::info!(
+                "Startup check: current block {} is still in epoch 0, no prior epoch to checkpoint",
+                current_block
+            );
+            return Ok(());
+        }
+
+        let last_checkpointed_epoch = self.state_tracker.last_epoch().await;
+        if current_epoch <= last_checkpointed_epoch {
+            tracing::info!(
+                "Startup check: latest epoch {} already checkpointed (last_epoch={}), skipping",
+                current_epoch,
+                last_checkpointed_epoch
+            );
+            return Ok(());
+        }
+
+        let epoch_block = current_epoch * epoch_blocks;
+
+        if self.checkpoint_exists(current_epoch) {
+            tracing::info!(
+                "Startup check: checkpoint archive for epoch {} already exists on disk, syncing state tracker",
+                current_epoch
+            );
+            self.state_tracker.update_last_checkpoint(current_epoch, epoch_block).await?;
+            return Ok(());
+        }
+
+        if current_block < epoch_block + checkpoint_delay_blocks {
+            let blocks_waited = current_block - epoch_block;
+            tracing::info!(
+                "Startup check: epoch {} boundary crossed at block {} but delay not satisfied ({}/{}); deferring to block monitor",
+                current_epoch,
+                epoch_block,
+                blocks_waited,
+                checkpoint_delay_blocks
+            );
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Startup check: creating checkpoint for latest completed epoch {} at block {} (current block: {})",
+            current_epoch,
+            epoch_block,
+            current_block
+        );
+        self.create_checkpoint(current_epoch, epoch_block).await?;
+
+        Ok(())
+    }
 }
