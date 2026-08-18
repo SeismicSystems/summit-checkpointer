@@ -188,13 +188,7 @@ impl CheckpointExecutor {
     pub async fn unwind_database(&self, checkpoint_dir: &Path, target_block: u64) -> Result<()> {
         tracing::info!("Unwinding database at {:?} to block {}", checkpoint_dir, target_block);
 
-        let mut cmd = Command::new(&self.reth_path);
-        cmd.arg("stage")
-            .arg("unwind")
-            .arg("--datadir")
-            .arg(checkpoint_dir)
-            .arg("to-block")
-            .arg(target_block.to_string());
+        let mut cmd = reth_unwind_command(&self.reth_path, checkpoint_dir, target_block);
 
         // Capture stdout/stderr
         cmd.stdout(Stdio::piped());
@@ -295,6 +289,22 @@ impl CheckpointExecutor {
     }
 }
 
+fn reth_unwind_command(reth_path: &Path, checkpoint_dir: &Path, target_block: u64) -> Command {
+    let mut cmd = Command::new(reth_path);
+    // Offline maintenance commands do not need a live custodian. Explicitly use
+    // the built-in purpose keys because newer Seismic Reth versions default to
+    // fetching purpose keys from the custodian socket before every stage command.
+    cmd.arg("--seismic.purpose-keys-source")
+        .arg("built-in")
+        .arg("stage")
+        .arg("unwind")
+        .arg("--datadir")
+        .arg(checkpoint_dir)
+        .arg("to-block")
+        .arg(target_block.to_string());
+    cmd
+}
+
 /// Recursively copy a directory and its contents
 fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     if !destination.exists() {
@@ -314,4 +324,31 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reth_unwind_command;
+    use std::{ffi::OsStr, path::Path};
+
+    #[test]
+    fn reth_unwind_uses_built_in_purpose_keys() {
+        let command = reth_unwind_command(Path::new("reth"), Path::new("/tmp/checkpoint"), 9998);
+        let args = command.as_std().get_args().collect::<Vec<&OsStr>>();
+
+        assert_eq!(
+            args,
+            [
+                "--seismic.purpose-keys-source",
+                "built-in",
+                "stage",
+                "unwind",
+                "--datadir",
+                "/tmp/checkpoint",
+                "to-block",
+                "9998",
+            ]
+            .map(OsStr::new)
+        );
+    }
 }

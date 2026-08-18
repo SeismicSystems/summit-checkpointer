@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use crate::error::{CheckpointerError, Result};
 
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 30;
+
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -128,7 +130,7 @@ impl Config {
             .set_default("summit.enabled", false)?
             .set_default("summit.rpc_url", "http://localhost:5052")?
             .set_default("summit.rpc_timeout_secs", 100)?
-            .set_default("monitor.poll_interval_secs", 12)?
+            .set_default("monitor.poll_interval_secs", DEFAULT_POLL_INTERVAL_SECS)?
             .set_default("monitor.retry_interval_secs", 60)?
             .set_default("state.state_file", "./checkpointer_state.cbor")?
             .set_default("logging.level", "info")?
@@ -273,7 +275,12 @@ fn validate_summit_rpc_timeout(rpc_timeout_secs: u64) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_max_snapshots, validate_summit_rpc_timeout};
+    use super::{validate_max_snapshots, validate_summit_rpc_timeout, DEFAULT_POLL_INTERVAL_SECS};
+
+    #[test]
+    fn default_poll_interval_is_thirty_seconds() {
+        assert_eq!(DEFAULT_POLL_INTERVAL_SECS, 30);
+    }
 
     #[test]
     fn max_snapshots_must_be_positive_when_set() {

@@ -46,8 +46,8 @@ rpc_timeout_secs = 100
 # Monitoring Configuration
 [monitor]
 # How often to check block number (in seconds)
-# Default: 12 seconds (approximately one Ethereum block)
-poll_interval_secs = 12
+# Default: 30 seconds
+poll_interval_secs = 30
 
 # How long to wait after RPC failure before retrying (in seconds)
 retry_interval_secs = 60
