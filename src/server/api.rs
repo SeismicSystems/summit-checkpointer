@@ -6,7 +6,7 @@ pub trait CheckpointerRpc {
     #[method(name = "healthCheck")]
     async fn health_check(&self) -> RpcResult<String>;
 
-    /// Prepares an encrypted snapshot
+    /// Downloads a `.tar.gz` snapshot archive into the configured per-epoch directory.
     #[method(name = "snapshot.download_encrypted_snapshot")]
     async fn download_encrypted_snapshot(&self, epoch: u64, url: String) -> RpcResult<()>;
 

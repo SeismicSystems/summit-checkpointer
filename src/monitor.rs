@@ -5,10 +5,11 @@ use crate::{
     checkpoint::CheckpointManager,
     config::MonitorConfig,
     error::{CheckpointerError, Result},
-    rpc::RpcClient,
+    rpc::{RpcClient, SummitRpcClient},
+    schedule::{fixed_interval_schedule, summit_checkpoint_schedule},
 };
 
-/// Block monitor that watches for epoch boundaries and triggers checkpoints
+/// Block monitor that watches for completed Summit checkpoints or fixed Reth intervals.
 pub struct BlockMonitor {
     rpc_client: RpcClient,
     checkpoint_manager: Arc<CheckpointManager>,
@@ -18,7 +19,7 @@ pub struct BlockMonitor {
 }
 
 impl BlockMonitor {
-    /// Create a new block monitor
+    /// Create a new block monitor.
     pub fn new(
         rpc_client: RpcClient,
         checkpoint_manager: Arc<CheckpointManager>,
@@ -29,14 +30,22 @@ impl BlockMonitor {
         Self { rpc_client, checkpoint_manager, config, epoch_blocks, checkpoint_delay_blocks }
     }
 
-    /// Run the monitoring loop until cancelled
+    /// Run the monitoring loop until cancelled.
     pub async fn run_until_cancelled(&mut self, cancel_token: CancellationToken) -> Result<()> {
-        tracing::info!(
-            "Starting block monitor (epoch_blocks={}, checkpoint_delay_blocks={}, poll_interval={}s)",
-            self.epoch_blocks,
-            self.checkpoint_delay_blocks,
-            self.config.poll_interval_secs
-        );
+        if self.rpc_client.summit.is_some() {
+            tracing::info!(
+                checkpoint_delay_blocks = self.checkpoint_delay_blocks,
+                poll_interval_secs = self.config.poll_interval_secs,
+                "Starting Summit-driven checkpoint monitor"
+            );
+        } else {
+            tracing::info!(
+                epoch_blocks = self.epoch_blocks,
+                checkpoint_delay_blocks = self.checkpoint_delay_blocks,
+                poll_interval_secs = self.config.poll_interval_secs,
+                "Starting fixed-interval Reth checkpoint monitor"
+            );
+        }
 
         loop {
             tokio::select! {
@@ -49,7 +58,10 @@ impl BlockMonitor {
                         match e {
                             CheckpointerError::Rpc(ref rpc_err) => {
                                 tracing::warn!("RPC connection error: {}. Will retry...", rpc_err);
-                                // Backoff on RPC errors
+                                tokio::time::sleep(Duration::from_secs(self.config.retry_interval_secs)).await;
+                            }
+                            CheckpointerError::Http(ref http_err) => {
+                                tracing::warn!("HTTP connection error: {}. Will retry...", http_err);
                                 tokio::time::sleep(Duration::from_secs(self.config.retry_interval_secs)).await;
                             }
                             CheckpointerError::CheckpointExecution(ref msg) => {
@@ -57,7 +69,6 @@ impl BlockMonitor {
                             }
                             _ => {
                                 tracing::error!("Unexpected error in monitoring loop: {}", e);
-                                // Backoff on unexpected errors
                                 tokio::time::sleep(Duration::from_secs(self.config.retry_interval_secs)).await;
                             }
                         }
@@ -69,62 +80,107 @@ impl BlockMonitor {
         Ok(())
     }
 
-    /// Check current block and create checkpoint if conditions are met
+    /// Check current state and create a checkpoint if one is ready.
     async fn check_and_checkpoint(&self) -> Result<()> {
-        // Summit is authoritative for both the epoch number and the finalized tip block.
-        // Fall back to block-math only when summit is disabled (broken after an
-        // epoch-length change, but preserves legacy behavior for fixed-length chains).
-        let (latest_epoch, last_block_height) = match &self.rpc_client.summit {
-            Some(summit) => summit.get_latest_epoch_last_block().await?,
-            None => {
-                let current_block = self.rpc_client.reth.get_block_number().await?;
-                let current_epoch = current_block / self.epoch_blocks;
-                if current_epoch == 0 {
-                    return Ok(());
-                }
-                let last_block_of_finalized = current_epoch * self.epoch_blocks - 1;
-                // Keep the configured delay in the fallback path only — summit-based
-                // gating already implies finality.
-                if current_block < last_block_of_finalized + 1 + self.checkpoint_delay_blocks {
-                    return Ok(());
-                }
-                (current_epoch - 1, last_block_of_finalized)
-            }
-        };
-
+        let current_block = self.rpc_client.reth.get_block_number().await?;
         let last_checkpointed_epoch = self.checkpoint_manager.state_tracker.last_epoch().await;
 
-        if latest_epoch <= last_checkpointed_epoch {
+        if let Some(summit) = &self.rpc_client.summit {
+            self.check_summit_checkpoint(summit, current_block, last_checkpointed_epoch).await
+        } else {
+            self.check_fixed_interval_checkpoint(current_block, last_checkpointed_epoch).await
+        }
+    }
+
+    async fn check_summit_checkpoint(
+        &self,
+        summit: &SummitRpcClient,
+        current_block: u64,
+        last_checkpointed_epoch: Option<u64>,
+    ) -> Result<()> {
+        let Some(checkpoint_info) = summit.get_latest_checkpoint_info().await? else {
+            tracing::debug!("Summit has not produced a checkpoint yet");
+            return Ok(());
+        };
+        if self
+            .checkpoint_manager
+            .checkpoint_is_satisfied(checkpoint_info.epoch, last_checkpointed_epoch)
+        {
             tracing::debug!(
-                "No new epoch: latest={}, last_checkpointed={}",
-                latest_epoch,
-                last_checkpointed_epoch
+                latest_summit_epoch = checkpoint_info.epoch,
+                last_checkpointed_epoch,
+                "No new Summit checkpoint"
             );
             return Ok(());
         }
 
-        // Reth must be caught up to the epoch's final block before we can unwind to it.
-        let current_reth_block = self.rpc_client.reth.get_block_number().await?;
-        if current_reth_block < last_block_height {
+        let bounds = summit.get_epoch_bounds(checkpoint_info.epoch).await?;
+        let schedule = summit_checkpoint_schedule(bounds, self.checkpoint_delay_blocks);
+        if current_block < schedule.ready_block {
             tracing::debug!(
-                "Reth at block {} is behind summit epoch {} tip ({}); waiting",
-                current_reth_block,
-                latest_epoch,
-                last_block_height
+                epoch = checkpoint_info.epoch,
+                current_block,
+                epoch_last_height = bounds.last_height,
+                ready_block = schedule.ready_block,
+                "Summit checkpoint exists; waiting for Reth checkpoint delay"
             );
             return Ok(());
         }
 
         tracing::info!(
-            "New epoch detected (epoch={}, prev_checkpointed={}); creating checkpoint at finalized block {} (reth at {})",
-            latest_epoch,
-            last_checkpointed_epoch,
-            last_block_height,
-            current_reth_block
+            epoch = checkpoint_info.epoch,
+            checkpoint_digest = ?checkpoint_info.digest,
+            epoch_first_height = bounds.first_height,
+            epoch_last_height = bounds.last_height,
+            checkpoint_block = schedule.checkpoint_block,
+            current_block,
+            "New Summit checkpoint is ready for snapshotting"
         );
+        self.checkpoint_manager
+            .create_checkpoint_with_expected_digest(
+                checkpoint_info.epoch,
+                schedule.checkpoint_block,
+                Some(checkpoint_info.digest),
+            )
+            .await
+    }
 
-        self.checkpoint_manager.create_checkpoint(latest_epoch, last_block_height).await?;
+    async fn check_fixed_interval_checkpoint(
+        &self,
+        current_block: u64,
+        last_checkpointed_epoch: Option<u64>,
+    ) -> Result<()> {
+        let current_epoch = current_block / self.epoch_blocks;
+        if current_epoch == 0 {
+            return Ok(());
+        }
 
-        Ok(())
+        // We are currently in epoch N, so epoch N - 1 is the one that just completed.
+        let completed_epoch = current_epoch - 1;
+        if self.checkpoint_manager.checkpoint_is_satisfied(completed_epoch, last_checkpointed_epoch)
+        {
+            return Ok(());
+        }
+
+        // current_epoch identifies the boundary that ended completed_epoch.
+        let schedule =
+            fixed_interval_schedule(current_epoch, self.epoch_blocks, self.checkpoint_delay_blocks);
+        if current_block < schedule.ready_block {
+            tracing::debug!(
+                completed_epoch,
+                current_block,
+                ready_block = schedule.ready_block,
+                "Waiting for fixed-interval checkpoint delay"
+            );
+            return Ok(());
+        }
+
+        tracing::info!(
+            epoch = completed_epoch,
+            checkpoint_block = schedule.checkpoint_block,
+            current_block,
+            "Fixed-interval Reth checkpoint is ready"
+        );
+        self.checkpoint_manager.create_checkpoint(completed_epoch, schedule.checkpoint_block).await
     }
 }

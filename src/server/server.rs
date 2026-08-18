@@ -1,4 +1,9 @@
-use std::{convert::Infallible, fs, net::SocketAddr, path::Path};
+use std::{
+    convert::Infallible,
+    fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use futures_util::StreamExt;
 use http_body::Frame;
@@ -17,20 +22,21 @@ use tracing::info;
 use crate::server::api::CheckpointerRpcServer;
 
 pub const SNAPSHOT_FILE_PREFIX: &str = "epoch_";
-pub const DATA_DISK_DIR: &str = "/persistent/checkpoints";
 
-pub struct RpcServer;
+pub struct RpcServer {
+    snapshot_dir: PathBuf,
+}
 
 impl RpcServer {
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
-        Self
+    pub fn new(snapshot_dir: PathBuf) -> Self {
+        Self { snapshot_dir }
     }
 
     pub async fn start_server(self, addr: SocketAddr) -> ServerHandle {
         let listener = TcpListener::bind(addr).await.expect("Failed to bind RPC server");
         let (stop_handle, server_handle) = stop_channel();
 
+        let snapshot_dir = self.snapshot_dir.clone();
         let rpc_module = self.into_rpc();
         let svc_builder = ServerBuilder::default().to_service_builder();
 
@@ -53,16 +59,20 @@ impl RpcServer {
                 let svc_builder = svc_builder.clone();
                 let conn_stop = stop_handle.clone();
                 let shutdown_stop = stop_handle.clone();
+                let snapshot_dir = snapshot_dir.clone();
 
                 let svc = tower::service_fn(move |req: http::Request<Incoming>| {
                     let rpc_module = rpc_module.clone();
                     let stop_handle = conn_stop.clone();
                     let svc_builder = svc_builder.clone();
+                    let snapshot_dir = snapshot_dir.clone();
 
                     async move {
                         if req.method() == http::Method::GET {
                             if let Some(epoch) = parse_snapshot_path(req.uri().path()) {
-                                return Ok::<_, Infallible>(handle_snapshot_stream(epoch).await);
+                                return Ok::<_, Infallible>(
+                                    handle_snapshot_stream(&snapshot_dir, epoch).await,
+                                );
                             }
                         }
 
@@ -99,10 +109,14 @@ fn parse_snapshot_path(path: &str) -> Option<u64> {
     path.strip_prefix("/snapshots/").and_then(|rest| rest.trim_end_matches('/').parse::<u64>().ok())
 }
 
-async fn handle_snapshot_stream(epoch: u64) -> http::Response<HttpBody> {
-    let snapshot_path = format!(
-        "{DATA_DISK_DIR}/{SNAPSHOT_FILE_PREFIX}{epoch}/{SNAPSHOT_FILE_PREFIX}{epoch}.tar.gz",
-    );
+fn snapshot_archive_path(snapshot_dir: &Path, epoch: u64) -> PathBuf {
+    snapshot_dir
+        .join(format!("{SNAPSHOT_FILE_PREFIX}{epoch}"))
+        .join(format!("{SNAPSHOT_FILE_PREFIX}{epoch}.tar.gz"))
+}
+
+async fn handle_snapshot_stream(snapshot_dir: &Path, epoch: u64) -> http::Response<HttpBody> {
+    let snapshot_path = snapshot_archive_path(snapshot_dir, epoch);
 
     let file = match tokio::fs::File::open(&snapshot_path).await {
         Ok(f) => f,
@@ -154,7 +168,7 @@ impl CheckpointerRpcServer for RpcServer {
         Ok("OK".to_string())
     }
 
-    /// Prepares an encrypted snapshot
+    /// Downloads a `.tar.gz` snapshot archive into the configured per-epoch directory.
     async fn download_encrypted_snapshot(&self, epoch: u64, url: String) -> RpcResult<()> {
         // Download the file
         let response = reqwest::get(&url)
@@ -170,17 +184,55 @@ impl CheckpointerRpcServer for RpcServer {
             .await
             .map_err(|e| string_to_rpc_error(format!("Failed to read response body: {}", e)))?;
 
-        // Create the filename
-        let filename = format!("{SNAPSHOT_FILE_PREFIX}{epoch}.tar.lz4");
+        let output_path = snapshot_archive_path(&self.snapshot_dir, epoch);
+        let epoch_dir = output_path.parent().ok_or_else(|| {
+            string_to_rpc_error(format!(
+                "Could not determine snapshot directory for {}",
+                output_path.display()
+            ))
+        })?;
+        let partial_path = epoch_dir.join(format!(".{SNAPSHOT_FILE_PREFIX}{epoch}.tar.gz.partial"));
 
-        // Write to file
-        let mut file =
-            tokio::fs::File::create(format!("{DATA_DISK_DIR}/{filename}")).await.map_err(|e| {
-                string_to_rpc_error(format!("Failed to create file {}: {}", filename, e))
+        tokio::fs::create_dir_all(epoch_dir).await.map_err(|e| {
+            string_to_rpc_error(format!(
+                "Failed to create snapshot directory {}: {}",
+                epoch_dir.display(),
+                e
+            ))
+        })?;
+
+        if partial_path.exists() {
+            tokio::fs::remove_file(&partial_path).await.map_err(|e| {
+                string_to_rpc_error(format!(
+                    "Failed to remove incomplete snapshot {}: {}",
+                    partial_path.display(),
+                    e
+                ))
             })?;
+        }
 
-        file.write_all(&bytes).await.map_err(|e| {
-            string_to_rpc_error(format!("Failed to write to file {}: {}", filename, e))
+        let write_result = async {
+            let mut file = tokio::fs::File::create(&partial_path).await?;
+            file.write_all(&bytes).await?;
+            file.flush().await
+        }
+        .await;
+
+        if let Err(e) = write_result {
+            let _ = tokio::fs::remove_file(&partial_path).await;
+            return Err(string_to_rpc_error(format!(
+                "Failed to write snapshot {}: {}",
+                partial_path.display(),
+                e
+            )));
+        }
+
+        tokio::fs::rename(&partial_path, &output_path).await.map_err(|e| {
+            string_to_rpc_error(format!(
+                "Failed to publish snapshot {}: {}",
+                output_path.display(),
+                e
+            ))
         })?;
 
         Ok(())
@@ -188,7 +240,7 @@ impl CheckpointerRpcServer for RpcServer {
 
     /// Restores from an encrypted snapshot
     async fn restore_from_encrypted_snapshot(&self, _epoch: u64) -> RpcResult<()> {
-        todo!()
+        Err(string_to_rpc_error("Snapshot restore is not implemented".to_string()))
     }
 
     /// Get an encrypted snapshot from this servers database
@@ -198,9 +250,7 @@ impl CheckpointerRpcServer for RpcServer {
             "get_encrypted_snapshot is deprecated; use GET /snapshots/{{epoch}} for streaming"
         );
 
-        let snapshot_path = format!(
-            "{DATA_DISK_DIR}/{SNAPSHOT_FILE_PREFIX}{epoch}/{SNAPSHOT_FILE_PREFIX}{epoch}.tar.gz",
-        );
+        let snapshot_path = snapshot_archive_path(&self.snapshot_dir, epoch);
 
         if !fs::exists(&snapshot_path).unwrap_or_default() {
             return Err(string_to_rpc_error(format!("No snapshot for epoch {epoch} stored")));
@@ -213,32 +263,28 @@ impl CheckpointerRpcServer for RpcServer {
 
     /// List all encrypted snapshots stored in this enclave
     async fn list_all_encrypted_snapshots(&self) -> RpcResult<Vec<u64>> {
-        let dir_path = Path::new(DATA_DISK_DIR);
-
-        let entries = fs::read_dir(dir_path).map_err(|e| {
+        let entries = fs::read_dir(&self.snapshot_dir).map_err(|e| {
             string_to_rpc_error(format!("Failed to read snapshots directory: {}", e))
         })?;
 
         let mut epochs = Vec::new();
-        #[allow(clippy::useless_format)]
-        let prefix = format!("{SNAPSHOT_FILE_PREFIX}");
 
         for entry in entries {
             let entry = entry.map_err(|e| {
                 string_to_rpc_error(format!("Failed to read directory entry: {}", e))
             })?;
+            let filename = entry.file_name();
+            let Some(epoch_str) =
+                filename.to_str().and_then(|name| name.strip_prefix(SNAPSHOT_FILE_PREFIX))
+            else {
+                continue;
+            };
+            let Ok(epoch) = epoch_str.parse::<u64>() else {
+                continue;
+            };
 
-            if let Some(filename) = entry.file_name().to_str() {
-                if filename.starts_with(&prefix) {
-                    // Extract epoch from filename
-                    let epoch_str = filename.strip_prefix(&prefix);
-
-                    if let Some(epoch_str) = epoch_str {
-                        if let Ok(epoch) = epoch_str.parse::<u64>() {
-                            epochs.push(epoch);
-                        }
-                    }
-                }
+            if snapshot_archive_path(&self.snapshot_dir, epoch).is_file() {
+                epochs.push(epoch);
             }
         }
 
@@ -259,4 +305,26 @@ impl CheckpointerRpcServer for RpcServer {
 
 pub fn string_to_rpc_error(e: String) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(ErrorCode::InternalError.code(), e, None::<()>)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_archive_path_uses_configured_directory() {
+        let snapshot_dir = Path::new("/custom/checkpoints");
+
+        assert_eq!(
+            snapshot_archive_path(snapshot_dir, 42),
+            snapshot_dir.join("epoch_42").join("epoch_42.tar.gz")
+        );
+    }
+
+    #[tokio::test]
+    async fn unimplemented_snapshot_restore_returns_an_error() {
+        let server = RpcServer::new(PathBuf::from("/custom/checkpoints"));
+
+        assert!(server.restore_from_encrypted_snapshot(42).await.is_err());
+    }
 }

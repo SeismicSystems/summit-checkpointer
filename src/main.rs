@@ -77,7 +77,8 @@ async fn main() -> Result<()> {
     tracing::info!("Block monitor initialized, starting main loop");
     let addr: SocketAddr = format!("0.0.0.0:{}", cli.port).parse().unwrap();
 
-    let server_handle = RpcServer::new().start_server(addr).await;
+    let server_handle =
+        RpcServer::new(config.checkpoint.output_dir.clone()).start_server(addr).await;
 
     // Run until cancelled
     monitor.run_until_cancelled(shutdown_token).await?;

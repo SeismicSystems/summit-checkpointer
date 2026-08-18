@@ -10,11 +10,11 @@ db_path = "/var/lib/reth/db"
 
 # Checkpointing Configuration
 [checkpoint]
-# Number of blocks per epoch (checkpoint created at each epoch boundary)
+# Fixed checkpoint interval used only when Summit integration is disabled.
+# Summit-enabled mode discovers exact epoch bounds through Summit RPC.
 epoch_blocks = 1000
 
-# Number of blocks to wait after epoch boundary before creating checkpoint
-# This gives reth time to flush all data to disk
+# Number of blocks to wait after the exact epoch boundary before checkpointing.
 checkpoint_delay_blocks = 3
 
 # Directory where checkpoints will be saved
@@ -26,8 +26,8 @@ compact = true
 # Path to mdbx_copy binary (can be absolute path or just "mdbx_copy" if in PATH)
 mdbx_copy_path = "mdbx_copy"
  
-# Maximum amount of snapshots we will hold in output_dir. Optional
-#max_snapshots = 50
+# Maximum number of snapshots to retain. Optional; when set, must be at least 1.
+# max_snapshots = 50
 
 # Path to reth binary (can be absolute path or just "reth" if in PATH)
 reth_path = "reth"
@@ -39,6 +39,9 @@ enabled = false
 
 # Summit RPC endpoint
 rpc_url = "http://localhost:5052"
+
+# Maximum duration for an individual Summit RPC request.
+rpc_timeout_secs = 100
 
 # Monitoring Configuration
 [monitor]

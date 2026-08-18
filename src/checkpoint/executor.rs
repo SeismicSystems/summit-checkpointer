@@ -229,9 +229,9 @@ impl CheckpointExecutor {
 
         tracing::info!("Compressing checkpoint to {:?}", archive_name);
 
-        // Build tar command to compress db, static_files, and summit_checkpoint
+        // Build tar command to compress the execution snapshot and metadata.
         let mut cmd = Command::new("tar");
-        cmd.arg("-czf").arg(&archive_name).arg("db").arg("static_files");
+        cmd.arg("-czf").arg(&archive_name).arg("db").arg("static_files").arg("metadata.json");
 
         // Only include summit_checkpoint if it exists
         let summit_checkpoint_dir = checkpoint_dir.join("summit_checkpoint");

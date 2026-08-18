@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use crate::{
     config::Config,
@@ -19,7 +19,10 @@ impl RpcClient {
         let reth = Arc::new(RethRpcClient::new(&config.reth.rpc_url)?);
 
         let summit = if config.summit.enabled {
-            Some(Arc::new(SummitRpcClient::new(&config.summit.rpc_url)?))
+            Some(Arc::new(SummitRpcClient::new(
+                &config.summit.rpc_url,
+                Duration::from_secs(config.summit.rpc_timeout_secs),
+            )?))
         } else {
             tracing::info!("Summit integration disabled");
             None

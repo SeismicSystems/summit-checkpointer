@@ -21,22 +21,25 @@ db_path = "/var/lib/reth/db"
 # Checkpointing Configuration
 # ============================================================================
 [checkpoint]
-# Number of blocks per epoch (checkpoint created at each epoch boundary)
-# Example: 1000 means checkpoints at blocks 1000, 2000, 3000, etc.
-# For testing, you can use a smaller value like 10 or 100
+# Fixed checkpoint interval used only when [summit].enabled = false.
+# When Summit integration is enabled, the checkpointer discovers completed
+# checkpoint epochs and their exact historical height bounds through Summit RPC,
+# so on-chain epoch-length changes are handled automatically.
 epoch_blocks = 1000
 
-# Number of blocks to wait after epoch boundary before creating checkpoint
-# This gives reth time to flush all data to disk
-# Example: If epoch_blocks=1000 and checkpoint_delay_blocks=3,
-#   the checkpoint will be created when we reach block 1003 (for epoch at block 1000)
-# Recommended: 2-5 blocks depending on your setup
+# Number of blocks to wait after the epoch boundary before creating a checkpoint.
+# This gives Reth time to flush data. With Summit enabled, the exact boundary is
+# obtained from getEpochBounds rather than calculated from epoch_blocks.
+# Recommended: 2-5 blocks depending on your setup.
 checkpoint_delay_blocks = 3
 
-# Directory where checkpoints will be saved
-# Each checkpoint creates a subdirectory like: epoch_5_block_1000/
-# Make sure this location has enough disk space (each checkpoint can be large)
+# Directory where checkpoints will be saved.
+# Each checkpoint creates epoch_N/epoch_N.tar.gz with metadata.json alongside it.
+# Make sure this location has enough disk space (each checkpoint can be large).
 output_dir = "/var/lib/reth/checkpoints"
+
+# Maximum number of snapshots to retain. Optional; when set, must be at least 1.
+# max_snapshots = 50
 
 # Use compact mode when copying the MDBX database
 # This reduces the checkpoint size by compacting the database during copy
@@ -64,6 +67,10 @@ enabled = true
 # Summit JSON-RPC endpoint
 # This is used to fetch checkpoint data for each epoch
 rpc_url = "http://localhost:5052"
+
+# Maximum duration for an individual Summit RPC request.
+# This is separate from monitor.retry_interval_secs, which controls retry backoff.
+rpc_timeout_secs = 100
 
 # ============================================================================
 # Monitoring Configuration
