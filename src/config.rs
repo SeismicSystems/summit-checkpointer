@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::error::{CheckpointerError, Result};
 
-/// Main configuration structure 
+/// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub reth: RethConfig,
