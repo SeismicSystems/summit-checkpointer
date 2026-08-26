@@ -1,6 +1,9 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 
 use crate::error::{CheckpointerError, Result};
 
@@ -109,8 +112,19 @@ pub struct Cli {
     #[arg(long)]
     pub log_format: Option<String>,
 
+    /// IP address on which the checkpointer RPC server listens.
+    #[arg(long, default_value = "0.0.0.0")]
+    pub bind_address: IpAddr,
+
+    /// Port on which the checkpointer RPC server listens.
     #[arg(short = 'p', long, default_value = "42069")]
     pub port: u16,
+}
+
+impl Cli {
+    pub fn rpc_socket_address(&self) -> SocketAddr {
+        SocketAddr::new(self.bind_address, self.port)
+    }
 }
 
 impl Config {
@@ -275,7 +289,13 @@ fn validate_summit_rpc_timeout(rpc_timeout_secs: u64) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_max_snapshots, validate_summit_rpc_timeout, DEFAULT_POLL_INTERVAL_SECS};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    use clap::Parser;
+
+    use super::{
+        validate_max_snapshots, validate_summit_rpc_timeout, Cli, DEFAULT_POLL_INTERVAL_SECS,
+    };
 
     #[test]
     fn default_poll_interval_is_thirty_seconds() {
@@ -293,5 +313,57 @@ mod tests {
     fn summit_rpc_timeout_must_be_positive() {
         assert!(validate_summit_rpc_timeout(100).is_ok());
         assert!(validate_summit_rpc_timeout(0).is_err());
+    }
+
+    #[test]
+    fn rpc_server_preserves_existing_default_socket_address() {
+        let cli = Cli::try_parse_from(["summit-checkpointer"]).unwrap();
+
+        assert_eq!(
+            cli.rpc_socket_address(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 42069)
+        );
+    }
+
+    #[test]
+    fn rpc_server_accepts_custom_ipv4_socket_address() {
+        let cli = Cli::try_parse_from([
+            "summit-checkpointer",
+            "--bind-address",
+            "127.0.0.1",
+            "--port",
+            "43000",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.rpc_socket_address(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 43000)
+        );
+    }
+
+    #[test]
+    fn rpc_server_accepts_custom_ipv6_socket_address() {
+        let cli = Cli::try_parse_from([
+            "summit-checkpointer",
+            "--bind-address",
+            "::1",
+            "--port",
+            "43001",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.rpc_socket_address(),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 43001)
+        );
+    }
+
+    #[test]
+    fn rpc_server_rejects_invalid_bind_address() {
+        let result =
+            Cli::try_parse_from(["summit-checkpointer", "--bind-address", "not-an-ip-address"]);
+
+        assert!(result.is_err());
     }
 }

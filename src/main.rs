@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -75,10 +75,10 @@ async fn main() -> Result<()> {
     );
 
     tracing::info!("Block monitor initialized, starting main loop");
-    let addr: SocketAddr = format!("0.0.0.0:{}", cli.port).parse().unwrap();
+    let rpc_socket_address = cli.rpc_socket_address();
 
     let server_handle =
-        RpcServer::new(config.checkpoint.output_dir.clone()).start_server(addr).await;
+        RpcServer::new(config.checkpoint.output_dir.clone()).start_server(rpc_socket_address).await;
 
     // Run until cancelled
     monitor.run_until_cancelled(shutdown_token).await?;

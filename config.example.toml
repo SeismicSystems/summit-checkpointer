@@ -1,5 +1,9 @@
 # Summit-Checkpointer Example Configuration
-# Copy this file to config.toml and adjust for your setup
+# Copy this file to config.toml and adjust for your setup.
+#
+# The RPC server bind address and port are CLI options rather than TOML values:
+#   --bind-address 0.0.0.0  # Existing default; use 127.0.0.1 for local-only RPC
+#   --port 42069
 
 # ============================================================================
 # Reth Configuration
