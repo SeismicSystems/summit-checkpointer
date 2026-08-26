@@ -25,6 +25,9 @@ compact = true
 
 # Path to mdbx_copy binary (can be absolute path or just "mdbx_copy" if in PATH)
 mdbx_copy_path = "mdbx_copy"
+ 
+# Maximum amount of snapshots we will hold in output_dir. Optional
+#max_snapshots = 50
 
 # Path to reth binary (can be absolute path or just "reth" if in PATH)
 reth_path = "reth"

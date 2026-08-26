@@ -4,11 +4,26 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+summit-types = {git = "https://github.com/SeismicSystems/summit.git", rev = "bd13c7e80176fd9efaad6e92e80b67a7cd54423e"}
+
+# summit-types at rev bd13c7e was written against commonware-* 2026.2.0. Cargo otherwise
+# resolves these to 2026.3.0 (trait API incompatible), so pin them explicitly.
+commonware-consensus = "=2026.2.0"
+commonware-cryptography = "=2026.2.0"
+commonware-codec = "=2026.2.0"
+commonware-math = "=2026.2.0"
+commonware-utils = "=2026.2.0"
+commonware-resolver = "=2026.2.0"
+commonware-p2p = "=2026.2.0"
+commonware-runtime = "=2026.2.0"
+commonware-parallel = "=2026.2.0"
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
 
 # HTTP client for RPC
 reqwest = { version = "0.12", features = ["json"] }
+
+ethereum_ssz = "0.9.0"
 
 # JSON-RPC client
 jsonrpsee = { version = "0.26.0", features = ["http-client", "client-core", "server", "macros"] }

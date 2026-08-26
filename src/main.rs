@@ -40,6 +40,15 @@ async fn main() -> Result<()> {
     tracing::info!("Verifying checkpoint tools (mdbx_copy, reth)...");
     checkpoint_manager.verify_checkpoint_tools().await?;
 
+    // Try to create a checkpoint for the latest completed epoch immediately, so we don't
+    // have to wait for the next epoch boundary to get caught up on startup.
+    if let Err(e) = checkpoint_manager.ensure_latest_checkpoint().await {
+        tracing::warn!(
+            "Startup checkpoint attempt failed: {}. Continuing; block monitor will retry.",
+            e
+        );
+    }
+
     // Setup graceful shutdown signal handling
     let shutdown_token = CancellationToken::new();
     let shutdown_signal = shutdown_token.clone();
