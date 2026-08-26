@@ -68,11 +68,13 @@ async fn main() -> Result<()> {
     tracing::info!("Block monitor initialized, starting main loop");
     let addr: SocketAddr = format!("0.0.0.0:{}", cli.port).parse().unwrap();
 
-    let rpc_handle = tokio::spawn(RpcServer::new().start_server(addr));
+    let server_handle = RpcServer::new().start_server(addr).await;
+
     // Run until cancelled
     monitor.run_until_cancelled(shutdown_token).await?;
 
-    rpc_handle.abort();
+    server_handle.stop().expect("Failed to stop RPC server");
+    server_handle.stopped().await;
 
     // Cleanup: save state
     tracing::info!("Saving final state...");
