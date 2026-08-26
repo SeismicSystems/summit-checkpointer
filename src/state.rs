@@ -7,16 +7,16 @@ use crate::error::Result;
 /// State structure for tracking checkpoint progress
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointerState {
-    pub last_checkpointed_epoch: u64,
-    pub last_checkpoint_block: u64,
+    pub last_checkpointed_epoch: Option<u64>,
+    pub last_checkpoint_block: Option<u64>,
     pub last_update: chrono::DateTime<chrono::Utc>,
 }
 
 impl Default for CheckpointerState {
     fn default() -> Self {
         Self {
-            last_checkpointed_epoch: 0,
-            last_checkpoint_block: 0,
+            last_checkpointed_epoch: None,
+            last_checkpoint_block: None,
             last_update: chrono::Utc::now(),
         }
     }
@@ -41,29 +41,29 @@ impl StateTracker {
         };
 
         tracing::info!(
-            "State loaded: last_epoch={}, last_block={}",
-            state.last_checkpointed_epoch,
-            state.last_checkpoint_block
+            last_epoch = ?state.last_checkpointed_epoch,
+            last_block = ?state.last_checkpoint_block,
+            "State loaded"
         );
 
         Ok(Self { state: Arc::new(RwLock::new(state)), path: path.to_path_buf() })
     }
 
     /// Get last checkpointed epoch
-    pub async fn last_epoch(&self) -> u64 {
+    pub async fn last_epoch(&self) -> Option<u64> {
         self.state.read().await.last_checkpointed_epoch
     }
 
-    /// Get last checkpointed block
-    pub async fn last_block(&self) -> u64 {
+    /// Get last checkpointed block.
+    pub async fn last_block(&self) -> Option<u64> {
         self.state.read().await.last_checkpoint_block
     }
 
     /// Update last checkpointed epoch and block
     pub async fn update_last_checkpoint(&self, epoch: u64, block: u64) -> Result<()> {
         let mut state = self.state.write().await;
-        state.last_checkpointed_epoch = epoch;
-        state.last_checkpoint_block = block;
+        state.last_checkpointed_epoch = Some(epoch);
+        state.last_checkpoint_block = Some(block);
         state.last_update = chrono::Utc::now();
 
         // Persist to disk immediately

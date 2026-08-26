@@ -6,7 +6,7 @@ pub struct CheckpointMetadata {
     /// Epoch number for this checkpoint
     pub epoch: u64,
 
-    /// Block number at checkpoint time
+    /// Block to which the copied Reth database was unwound.
     pub block_number: u64,
 
     /// Timestamp when checkpoint was created

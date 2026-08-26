@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod monitor;
 pub mod rpc;
+mod schedule;
 pub mod server;
 pub mod state;
 

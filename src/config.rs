@@ -1,8 +1,13 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 
 use crate::error::{CheckpointerError, Result};
+
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 30;
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,7 +28,9 @@ pub struct RethConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointConfig {
+    /// Fixed block interval used only when Summit integration is disabled.
     pub epoch_blocks: u64,
+    /// Blocks to wait after the exact epoch boundary before snapshotting.
     pub checkpoint_delay_blocks: u64,
     pub output_dir: PathBuf,
     pub compact: bool,
@@ -36,6 +43,7 @@ pub struct CheckpointConfig {
 pub struct SummitConfig {
     pub enabled: bool,
     pub rpc_url: String,
+    pub rpc_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,7 +80,7 @@ pub struct Cli {
     #[arg(long)]
     pub reth_db_path: Option<PathBuf>,
 
-    /// Override epoch block count
+    /// Override the fixed block interval used when Summit integration is disabled.
     #[arg(long)]
     pub epoch_blocks: Option<u64>,
 
@@ -104,8 +112,19 @@ pub struct Cli {
     #[arg(long)]
     pub log_format: Option<String>,
 
+    /// IP address on which the checkpointer RPC server listens.
+    #[arg(long, default_value = "0.0.0.0")]
+    pub bind_address: IpAddr,
+
+    /// Port on which the checkpointer RPC server listens.
     #[arg(short = 'p', long, default_value = "42069")]
     pub port: u16,
+}
+
+impl Cli {
+    pub fn rpc_socket_address(&self) -> SocketAddr {
+        SocketAddr::new(self.bind_address, self.port)
+    }
 }
 
 impl Config {
@@ -124,7 +143,8 @@ impl Config {
             .set_default("checkpoint.max_snapshots", None::<u64>)?
             .set_default("summit.enabled", false)?
             .set_default("summit.rpc_url", "http://localhost:5052")?
-            .set_default("monitor.poll_interval_secs", 12)?
+            .set_default("summit.rpc_timeout_secs", 100)?
+            .set_default("monitor.poll_interval_secs", DEFAULT_POLL_INTERVAL_SECS)?
             .set_default("monitor.retry_interval_secs", 60)?
             .set_default("state.state_file", "./checkpointer_state.cbor")?
             .set_default("logging.level", "info")?
@@ -195,6 +215,9 @@ impl Config {
             ));
         }
 
+        validate_max_snapshots(self.checkpoint.max_snapshots)?;
+        validate_summit_rpc_timeout(self.summit.rpc_timeout_secs)?;
+
         // Validate poll_interval_secs
         if self.monitor.poll_interval_secs == 0 {
             return Err(CheckpointerError::Config(
@@ -242,4 +265,105 @@ fn expand_path(path: &PathBuf) -> Result<PathBuf> {
         .map_err(|e| CheckpointerError::InvalidPath(format!("Failed to expand path: {}", e)))?;
 
     Ok(PathBuf::from(expanded.as_ref()))
+}
+
+fn validate_max_snapshots(max_snapshots: Option<u64>) -> Result<()> {
+    if max_snapshots == Some(0) {
+        return Err(CheckpointerError::Config(
+            "checkpoint.max_snapshots must be greater than 0 when set".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_summit_rpc_timeout(rpc_timeout_secs: u64) -> Result<()> {
+    if rpc_timeout_secs == 0 {
+        return Err(CheckpointerError::Config(
+            "summit.rpc_timeout_secs must be greater than 0".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    use clap::Parser;
+
+    use super::{
+        validate_max_snapshots, validate_summit_rpc_timeout, Cli, DEFAULT_POLL_INTERVAL_SECS,
+    };
+
+    #[test]
+    fn default_poll_interval_is_thirty_seconds() {
+        assert_eq!(DEFAULT_POLL_INTERVAL_SECS, 30);
+    }
+
+    #[test]
+    fn max_snapshots_must_be_positive_when_set() {
+        assert!(validate_max_snapshots(None).is_ok());
+        assert!(validate_max_snapshots(Some(1)).is_ok());
+        assert!(validate_max_snapshots(Some(0)).is_err());
+    }
+
+    #[test]
+    fn summit_rpc_timeout_must_be_positive() {
+        assert!(validate_summit_rpc_timeout(100).is_ok());
+        assert!(validate_summit_rpc_timeout(0).is_err());
+    }
+
+    #[test]
+    fn rpc_server_preserves_existing_default_socket_address() {
+        let cli = Cli::try_parse_from(["summit-checkpointer"]).unwrap();
+
+        assert_eq!(
+            cli.rpc_socket_address(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 42069)
+        );
+    }
+
+    #[test]
+    fn rpc_server_accepts_custom_ipv4_socket_address() {
+        let cli = Cli::try_parse_from([
+            "summit-checkpointer",
+            "--bind-address",
+            "127.0.0.1",
+            "--port",
+            "43000",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.rpc_socket_address(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 43000)
+        );
+    }
+
+    #[test]
+    fn rpc_server_accepts_custom_ipv6_socket_address() {
+        let cli = Cli::try_parse_from([
+            "summit-checkpointer",
+            "--bind-address",
+            "::1",
+            "--port",
+            "43001",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.rpc_socket_address(),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 43001)
+        );
+    }
+
+    #[test]
+    fn rpc_server_rejects_invalid_bind_address() {
+        let result =
+            Cli::try_parse_from(["summit-checkpointer", "--bind-address", "not-an-ip-address"]);
+
+        assert!(result.is_err());
+    }
 }
