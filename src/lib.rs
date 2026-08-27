@@ -17,7 +17,7 @@ pub use jsonrpsee::{
 };
 
 // Re-export commonly used types
-pub use checkpoint::CheckpointManager;
+pub use checkpoint::{CheckpointManager, SnapshotManifest};
 pub use config::{Cli, Config};
 pub use error::{CheckpointerError, Result};
 pub use monitor::BlockMonitor;

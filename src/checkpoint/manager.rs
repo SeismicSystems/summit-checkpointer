@@ -3,8 +3,17 @@ use std::{
     sync::Arc,
 };
 
+use ssz::Decode;
+use summit_types::{
+    checkpoint::Checkpoint as SummitCheckpoint, scheme::MultisigScheme, Block as SummitBlock,
+    FinalizedHeader as SummitFinalizedHeader,
+};
+
 use crate::{
-    checkpoint::{CheckpointExecutor, CheckpointMetadata},
+    checkpoint::{
+        manifest::sha256_file, CheckpointExecutor, CheckpointMetadata, ExecutionIdentity,
+        SnapshotManifest, SNAPSHOT_MANIFEST_FILE_NAME,
+    },
     config::{CheckpointConfig, Config},
     error::{CheckpointerError, Result},
     rpc::{RpcClient, SummitRpcClient},
@@ -131,11 +140,11 @@ impl CheckpointManager {
         tokio::fs::create_dir_all(checkpoint_path).await?;
         tracing::debug!(path = ?checkpoint_path, "Created checkpoint working directory");
 
-        tracing::info!("Step 1/7: Copying MDBX database");
+        tracing::info!("Step 1/8: Copying MDBX database");
         let db_dest = checkpoint_path.join("db").join("mdbx.dat");
         self.executor.copy_mdbx_database(&self.db_path, &db_dest).await?;
 
-        tracing::info!("Step 2/7: Copying static_files");
+        tracing::info!("Step 2/8: Copying static_files");
         let source_db_dir = self.db_path.parent().ok_or_else(|| {
             CheckpointerError::InvalidPath(
                 "Could not determine parent directory of db_path".to_string(),
@@ -143,33 +152,52 @@ impl CheckpointManager {
         })?;
         self.executor.copy_static_files(source_db_dir, checkpoint_path).await?;
 
-        tracing::info!("Step 3/7: Deleting lock file");
+        tracing::info!("Step 3/8: Deleting lock file");
         self.executor.delete_lock_file(checkpoint_path).await?;
 
-        tracing::info!(checkpoint_block, "Step 4/7: Unwinding copied database");
+        tracing::info!(checkpoint_block, "Step 4/8: Unwinding copied database");
         self.executor.unwind_database(checkpoint_path, checkpoint_block).await?;
 
-        tracing::info!("Step 5/7: Fetching Summit checkpoint and verification headers");
-        if let Some(summit_client) = &self.rpc_client.summit {
-            self.write_summit_checkpoint(
-                summit_client,
-                checkpoint_path,
-                epoch,
-                expected_checkpoint_digest,
+        tracing::info!("Step 5/8: Fetching and verifying Summit checkpoint");
+        let summit_identity = if let Some(summit_client) = &self.rpc_client.summit {
+            Some(
+                self.write_summit_checkpoint(
+                    summit_client,
+                    checkpoint_path,
+                    epoch,
+                    checkpoint_block,
+                    expected_checkpoint_digest,
+                )
+                .await?,
             )
-            .await?;
         } else {
             tracing::debug!("Summit integration disabled, skipping Summit checkpoint data");
-        }
+            None
+        };
 
-        tracing::info!("Step 6/7: Writing metadata");
+        tracing::info!("Step 6/8: Writing embedded metadata");
         let metadata = CheckpointMetadata::new(epoch, checkpoint_block);
         let metadata_path = checkpoint_path.join("metadata.json");
         let metadata_json = serde_json::to_string_pretty(&metadata)?;
         tokio::fs::write(metadata_path, metadata_json).await?;
 
-        tracing::info!("Step 7/7: Compressing checkpoint and cleaning up");
-        self.executor.compress_and_cleanup(checkpoint_path, epoch).await
+        tracing::info!("Step 7/8: Compressing checkpoint and cleaning up");
+        self.executor.compress_and_cleanup(checkpoint_path, epoch).await?;
+
+        if let Some(summit_identity) = summit_identity {
+            tracing::info!("Step 8/8: Hashing archive and writing manifest");
+            self.write_snapshot_manifest(
+                checkpoint_path,
+                epoch,
+                metadata.timestamp,
+                summit_identity,
+            )
+            .await?;
+        } else {
+            tracing::info!("Step 8/8: Summit disabled, skipping snapshot manifest");
+        }
+
+        Ok(())
     }
 
     async fn write_summit_checkpoint(
@@ -177,8 +205,9 @@ impl CheckpointManager {
         summit_client: &SummitRpcClient,
         checkpoint_path: &Path,
         epoch: u64,
+        checkpoint_block: u64,
         expected_checkpoint_digest: Option<[u8; 32]>,
-    ) -> Result<()> {
+    ) -> Result<SummitSnapshotIdentity> {
         let checkpoint_data = summit_client.get_checkpoint(epoch).await?;
         validate_checkpoint_digest(epoch, expected_checkpoint_digest, checkpoint_data.digest)?;
         if checkpoint_data.checkpoint.is_empty()
@@ -191,13 +220,36 @@ impl CheckpointManager {
             )));
         }
 
+        let summit_identity = decode_summit_snapshot_identity(
+            epoch,
+            checkpoint_data.digest,
+            &checkpoint_data.checkpoint,
+            &checkpoint_data.last_block,
+            &checkpoint_data.finalized_header,
+        )?;
+        let reth_block = self.rpc_client.reth.get_block(checkpoint_block).await?;
+        let reth_identity = ExecutionIdentity {
+            block_number: reth_block.block_number()?,
+            block_hash: reth_block.block_hash()?,
+            state_root: reth_block.state_root()?,
+        };
+        validate_execution_identity(
+            epoch,
+            checkpoint_block,
+            summit_identity.execution,
+            reth_identity,
+        )?;
+
         tracing::info!(
             epoch,
             digest = ?checkpoint_data.digest,
+            execution_block = summit_identity.execution.block_number,
+            execution_hash = %hex::encode(summit_identity.execution.block_hash),
+            state_root = %hex::encode(summit_identity.execution.state_root),
             checkpoint_bytes = checkpoint_data.checkpoint.len(),
             last_block_bytes = checkpoint_data.last_block.len(),
             finalized_header_bytes = checkpoint_data.finalized_header.len(),
-            "Received Summit checkpoint"
+            "Verified Summit checkpoint against Reth"
         );
 
         let cache_dir = self.config.output_dir.join(FINALIZED_HEADER_CACHE_DIR);
@@ -261,6 +313,36 @@ impl CheckpointManager {
             reused_headers,
             cache = ?cache_dir,
             "Summit checkpoint verification bundle written successfully"
+        );
+        Ok(summit_identity)
+    }
+
+    async fn write_snapshot_manifest(
+        &self,
+        checkpoint_path: &Path,
+        epoch: u64,
+        created_at: chrono::DateTime<chrono::Utc>,
+        summit_identity: SummitSnapshotIdentity,
+    ) -> Result<()> {
+        let archive_path = checkpoint_path.join(format!("epoch_{epoch}.tar.gz"));
+        let archive_size = tokio::fs::metadata(&archive_path).await?.len();
+        let archive_sha256 = sha256_file(&archive_path).await?;
+        let manifest = SnapshotManifest::new(
+            epoch,
+            summit_identity.checkpoint_digest,
+            summit_identity.execution,
+            archive_sha256,
+            archive_size,
+            created_at,
+        );
+        let manifest_json = serde_json::to_string_pretty(&manifest)?;
+        tokio::fs::write(checkpoint_path.join(SNAPSHOT_MANIFEST_FILE_NAME), manifest_json).await?;
+
+        tracing::info!(
+            epoch,
+            archive_size,
+            archive_sha256 = %hex::encode(archive_sha256),
+            "Snapshot manifest written"
         );
         Ok(())
     }
@@ -493,6 +575,112 @@ impl CheckpointManager {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SummitSnapshotIdentity {
+    checkpoint_digest: [u8; 32],
+    execution: ExecutionIdentity,
+}
+
+fn decode_summit_snapshot_identity(
+    epoch: u64,
+    response_digest: [u8; 32],
+    checkpoint_bytes: &[u8],
+    last_block_bytes: &[u8],
+    finalized_header_bytes: &[u8],
+) -> Result<SummitSnapshotIdentity> {
+    let checkpoint = SummitCheckpoint::from_ssz_bytes(checkpoint_bytes).map_err(|error| {
+        CheckpointerError::CheckpointExecution(format!(
+            "Failed to decode Summit checkpoint for epoch {epoch}: {error:?}"
+        ))
+    })?;
+    let checkpoint_digest: [u8; 32] = checkpoint.digest.as_ref().try_into().map_err(|_| {
+        CheckpointerError::CheckpointExecution(format!(
+            "Summit checkpoint for epoch {epoch} contained a non-32-byte digest"
+        ))
+    })?;
+    if checkpoint_digest != response_digest {
+        return Err(CheckpointerError::CheckpointExecution(format!(
+            "Summit checkpoint digest mismatch for epoch {epoch}: RPC response {}, artifact {}",
+            hex::encode(response_digest),
+            hex::encode(checkpoint_digest)
+        )));
+    }
+
+    let finalized_header = SummitFinalizedHeader::<MultisigScheme>::from_ssz_bytes(
+        finalized_header_bytes,
+    )
+    .map_err(|error| {
+        CheckpointerError::CheckpointExecution(format!(
+            "Failed to decode Summit finalized_header for epoch {epoch}: {error:?}"
+        ))
+    })?;
+    let header_checkpoint_digest: [u8; 32] =
+        finalized_header.header().checkpoint_hash().as_ref().try_into().map_err(|_| {
+            CheckpointerError::CheckpointExecution(format!(
+                "Summit finalized header for epoch {epoch} contained a non-32-byte checkpoint hash"
+            ))
+        })?;
+    if header_checkpoint_digest != checkpoint_digest {
+        return Err(CheckpointerError::CheckpointExecution(format!(
+            "Summit finalized-header checkpoint hash mismatch for epoch {epoch}: header {}, checkpoint {}",
+            hex::encode(header_checkpoint_digest),
+            hex::encode(checkpoint_digest)
+        )));
+    }
+
+    let last_block = SummitBlock::from_ssz_bytes(last_block_bytes).map_err(|error| {
+        CheckpointerError::CheckpointExecution(format!(
+            "Failed to decode Summit last_block for epoch {epoch}: {error:?}"
+        ))
+    })?;
+    let payload = &last_block.payload.payload_inner.payload_inner;
+
+    Ok(SummitSnapshotIdentity {
+        checkpoint_digest,
+        execution: ExecutionIdentity {
+            block_number: payload.block_number,
+            block_hash: payload.block_hash.0,
+            state_root: payload.state_root.0,
+        },
+    })
+}
+
+fn validate_execution_identity(
+    epoch: u64,
+    checkpoint_block: u64,
+    summit: ExecutionIdentity,
+    reth: ExecutionIdentity,
+) -> Result<()> {
+    if summit.block_number != checkpoint_block {
+        return Err(CheckpointerError::CheckpointExecution(format!(
+            "Summit execution block mismatch for epoch {epoch}: expected unwind block {checkpoint_block}, received {}",
+            summit.block_number
+        )));
+    }
+    if reth.block_number != checkpoint_block {
+        return Err(CheckpointerError::CheckpointExecution(format!(
+            "Reth returned block {} while verifying checkpoint block {checkpoint_block} for epoch {epoch}",
+            reth.block_number
+        )));
+    }
+    if summit.block_hash != reth.block_hash {
+        return Err(CheckpointerError::CheckpointExecution(format!(
+            "Summit/Reth block hash mismatch for epoch {epoch} at block {checkpoint_block}: Summit {}, Reth {}",
+            hex::encode(summit.block_hash),
+            hex::encode(reth.block_hash)
+        )));
+    }
+    if summit.state_root != reth.state_root {
+        return Err(CheckpointerError::CheckpointExecution(format!(
+            "Summit/Reth state root mismatch for epoch {epoch} at block {checkpoint_block}: Summit {}, Reth {}",
+            hex::encode(summit.state_root),
+            hex::encode(reth.state_root)
+        )));
+    }
+
+    Ok(())
+}
+
 fn validate_checkpoint_digest(
     epoch: u64,
     expected_digest: Option<[u8; 32]>,
@@ -519,7 +707,14 @@ fn state_and_archive_allow_skip(
 
 #[cfg(test)]
 mod tests {
-    use super::{state_and_archive_allow_skip, validate_checkpoint_digest};
+    use super::{
+        state_and_archive_allow_skip, validate_checkpoint_digest, validate_execution_identity,
+        ExecutionIdentity,
+    };
+
+    fn execution_identity() -> ExecutionIdentity {
+        ExecutionIdentity { block_number: 42, block_hash: [0x11; 32], state_root: [0x22; 32] }
+    }
 
     #[test]
     fn checkpoint_skip_requires_archive_when_state_matches_epoch() {
@@ -541,5 +736,36 @@ mod tests {
         assert!(validate_checkpoint_digest(7, None, digest).is_ok());
         assert!(validate_checkpoint_digest(7, Some(digest), digest).is_ok());
         assert!(validate_checkpoint_digest(7, Some([41; 32]), digest).is_err());
+    }
+
+    #[test]
+    fn summit_and_reth_execution_identity_must_match() {
+        let identity = execution_identity();
+
+        assert!(validate_execution_identity(7, 42, identity, identity).is_ok());
+    }
+
+    #[test]
+    fn execution_identity_rejects_wrong_unwind_block() {
+        let mut summit = execution_identity();
+        summit.block_number = 41;
+
+        assert!(validate_execution_identity(7, 42, summit, execution_identity()).is_err());
+    }
+
+    #[test]
+    fn execution_identity_rejects_block_hash_mismatch() {
+        let mut reth = execution_identity();
+        reth.block_hash = [0x33; 32];
+
+        assert!(validate_execution_identity(7, 42, execution_identity(), reth).is_err());
+    }
+
+    #[test]
+    fn execution_identity_rejects_state_root_mismatch() {
+        let mut reth = execution_identity();
+        reth.state_root = [0x33; 32];
+
+        assert!(validate_execution_identity(7, 42, execution_identity(), reth).is_err());
     }
 }
