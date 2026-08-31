@@ -4,6 +4,28 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Summit SSZ types used to verify the checkpoint artifacts against Reth before publication.
+summit-types = { git = "https://github.com/SeismicSystems/summit.git", rev = "01a71832a140e0c774f31b27f4aad888968c1585" }
+ethereum_ssz = "0.9.0"
+
+# summit-types at the pinned revision was written against commonware-* 2026.7.0.
+# Pin these explicitly so Cargo does not select a newer, API-incompatible release.
+commonware-actor = "=2026.7.0"
+commonware-consensus = "=2026.7.0"
+commonware-cryptography = "=2026.7.0"
+commonware-codec = "=2026.7.0"
+commonware-formatting = "=2026.7.0"
+commonware-math = "=2026.7.0"
+commonware-utils = "=2026.7.0"
+commonware-resolver = "=2026.7.0"
+commonware-p2p = "=2026.7.0"
+commonware-runtime = "=2026.7.0"
+commonware-parallel = "=2026.7.0"
+
+# Snapshot manifest hashing and hex encoding.
+sha2 = "0.10"
+hex = "0.4"
+
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }
 

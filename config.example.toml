@@ -39,6 +39,10 @@ checkpoint_delay_blocks = 3
 
 # Directory where checkpoints will be saved.
 # Each checkpoint creates epoch_N/epoch_N.tar.gz with metadata.json alongside it.
+# When Summit integration is enabled, the producer verifies the Summit checkpoint digest and
+# execution block number/hash/state root against Reth, then also writes epoch_N/manifest.json.
+# The manifest is served through GET /snapshots/{epoch}/manifest and commits to the exact archive
+# bytes with SHA-256 and size.
 # Make sure this location has enough disk space (each checkpoint can be large).
 output_dir = "/var/lib/reth/checkpoints"
 

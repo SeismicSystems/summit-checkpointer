@@ -19,7 +19,7 @@ use tokio_util::io::ReaderStream;
 use tower::Service;
 use tracing::info;
 
-use crate::server::api::CheckpointerRpcServer;
+use crate::{checkpoint::SNAPSHOT_MANIFEST_FILE_NAME, server::api::CheckpointerRpcServer};
 
 pub const SNAPSHOT_FILE_PREFIX: &str = "epoch_";
 
@@ -69,6 +69,11 @@ impl RpcServer {
 
                     async move {
                         if req.method() == http::Method::GET {
+                            if let Some(epoch) = parse_manifest_path(req.uri().path()) {
+                                return Ok::<_, Infallible>(
+                                    handle_snapshot_manifest(&snapshot_dir, epoch).await,
+                                );
+                            }
                             if let Some(epoch) = parse_snapshot_path(req.uri().path()) {
                                 return Ok::<_, Infallible>(
                                     handle_snapshot_stream(&snapshot_dir, epoch).await,
@@ -105,14 +110,52 @@ impl RpcServer {
     }
 }
 
+fn parse_manifest_path(path: &str) -> Option<u64> {
+    let rest = path.strip_prefix("/snapshots/")?.trim_end_matches('/');
+    let (epoch, suffix) = rest.split_once('/')?;
+    (suffix == "manifest").then_some(epoch).and_then(|epoch| epoch.parse::<u64>().ok())
+}
+
 fn parse_snapshot_path(path: &str) -> Option<u64> {
     path.strip_prefix("/snapshots/").and_then(|rest| rest.trim_end_matches('/').parse::<u64>().ok())
 }
 
+fn snapshot_epoch_dir(snapshot_dir: &Path, epoch: u64) -> PathBuf {
+    snapshot_dir.join(format!("{SNAPSHOT_FILE_PREFIX}{epoch}"))
+}
+
 fn snapshot_archive_path(snapshot_dir: &Path, epoch: u64) -> PathBuf {
-    snapshot_dir
-        .join(format!("{SNAPSHOT_FILE_PREFIX}{epoch}"))
-        .join(format!("{SNAPSHOT_FILE_PREFIX}{epoch}.tar.gz"))
+    snapshot_epoch_dir(snapshot_dir, epoch).join(format!("{SNAPSHOT_FILE_PREFIX}{epoch}.tar.gz"))
+}
+
+fn snapshot_manifest_path(snapshot_dir: &Path, epoch: u64) -> PathBuf {
+    snapshot_epoch_dir(snapshot_dir, epoch).join(SNAPSHOT_MANIFEST_FILE_NAME)
+}
+
+async fn handle_snapshot_manifest(snapshot_dir: &Path, epoch: u64) -> http::Response<HttpBody> {
+    let manifest_path = snapshot_manifest_path(snapshot_dir, epoch);
+    let manifest = match tokio::fs::read(&manifest_path).await {
+        Ok(manifest) => manifest,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return http::Response::builder()
+                .status(http::StatusCode::NOT_FOUND)
+                .body(HttpBody::from(format!("No manifest for epoch {epoch}")))
+                .expect("response build");
+        }
+        Err(error) => {
+            return http::Response::builder()
+                .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                .body(HttpBody::from(format!("Failed to read snapshot manifest: {error}")))
+                .expect("response build");
+        }
+    };
+
+    http::Response::builder()
+        .status(http::StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .header(http::header::CONTENT_LENGTH, manifest.len())
+        .body(HttpBody::from(manifest))
+        .expect("response build")
 }
 
 async fn handle_snapshot_stream(snapshot_dir: &Path, epoch: u64) -> http::Response<HttpBody> {
@@ -319,6 +362,25 @@ mod tests {
             snapshot_archive_path(snapshot_dir, 42),
             snapshot_dir.join("epoch_42").join("epoch_42.tar.gz")
         );
+    }
+
+    #[test]
+    fn manifest_path_uses_configured_directory() {
+        let snapshot_dir = Path::new("/custom/checkpoints");
+
+        assert_eq!(
+            snapshot_manifest_path(snapshot_dir, 42),
+            snapshot_dir.join("epoch_42").join("manifest.json")
+        );
+    }
+
+    #[test]
+    fn parses_snapshot_and_manifest_routes_without_overlap() {
+        assert_eq!(parse_snapshot_path("/snapshots/42"), Some(42));
+        assert_eq!(parse_snapshot_path("/snapshots/42/manifest"), None);
+        assert_eq!(parse_manifest_path("/snapshots/42/manifest"), Some(42));
+        assert_eq!(parse_manifest_path("/snapshots/42/manifest/"), Some(42));
+        assert_eq!(parse_manifest_path("/snapshots/not-an-epoch/manifest"), None);
     }
 
     #[tokio::test]
