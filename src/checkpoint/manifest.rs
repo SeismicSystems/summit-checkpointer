@@ -10,7 +10,7 @@ use crate::error::Result;
 pub const SNAPSHOT_MANIFEST_FILE_NAME: &str = "manifest.json";
 pub const SNAPSHOT_MANIFEST_VERSION: u32 = 1;
 
-/// Execution-layer identity shared by Summit's finalized block and the Reth snapshot.
+/// Execution-layer identity of the Reth snapshot bound by the Summit checkpoint state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionIdentity {
     pub block_number: u64,
