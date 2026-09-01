@@ -5,8 +5,8 @@ use std::{
 
 use ssz::Decode;
 use summit_types::{
-    checkpoint::Checkpoint as SummitCheckpoint, scheme::MultisigScheme, Block as SummitBlock,
-    FinalizedHeader as SummitFinalizedHeader,
+    checkpoint::Checkpoint as SummitCheckpoint, consensus_state::ConsensusState,
+    scheme::MultisigScheme, Block as SummitBlock, FinalizedHeader as SummitFinalizedHeader,
 };
 
 use crate::{
@@ -220,8 +220,9 @@ impl CheckpointManager {
             )));
         }
 
-        let summit_identity = decode_summit_snapshot_identity(
+        let summit_checkpoint_identity = decode_summit_checkpoint_identity(
             epoch,
+            checkpoint_block,
             checkpoint_data.digest,
             &checkpoint_data.checkpoint,
             &checkpoint_data.last_block,
@@ -233,12 +234,16 @@ impl CheckpointManager {
             block_hash: reth_block.block_hash()?,
             state_root: reth_block.state_root()?,
         };
-        validate_execution_identity(
+        validate_checkpoint_execution_identity(
             epoch,
             checkpoint_block,
-            summit_identity.execution,
+            summit_checkpoint_identity.execution_block_hash,
             reth_identity,
         )?;
+        let summit_identity = SummitSnapshotIdentity {
+            checkpoint_digest: summit_checkpoint_identity.checkpoint_digest,
+            execution: reth_identity,
+        };
 
         tracing::info!(
             epoch,
@@ -249,7 +254,7 @@ impl CheckpointManager {
             checkpoint_bytes = checkpoint_data.checkpoint.len(),
             last_block_bytes = checkpoint_data.last_block.len(),
             finalized_header_bytes = checkpoint_data.finalized_header.len(),
-            "Verified Summit checkpoint against Reth"
+            "Verified Summit checkpoint state against Reth"
         );
 
         let cache_dir = self.config.output_dir.join(FINALIZED_HEADER_CACHE_DIR);
@@ -576,18 +581,25 @@ impl CheckpointManager {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SummitCheckpointIdentity {
+    checkpoint_digest: [u8; 32],
+    execution_block_hash: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SummitSnapshotIdentity {
     checkpoint_digest: [u8; 32],
     execution: ExecutionIdentity,
 }
 
-fn decode_summit_snapshot_identity(
+fn decode_summit_checkpoint_identity(
     epoch: u64,
+    checkpoint_block: u64,
     response_digest: [u8; 32],
     checkpoint_bytes: &[u8],
     last_block_bytes: &[u8],
     finalized_header_bytes: &[u8],
-) -> Result<SummitSnapshotIdentity> {
+) -> Result<SummitCheckpointIdentity> {
     let checkpoint = SummitCheckpoint::from_ssz_bytes(checkpoint_bytes).map_err(|error| {
         CheckpointerError::CheckpointExecution(format!(
             "Failed to decode Summit checkpoint for epoch {epoch}: {error:?}"
@@ -606,6 +618,11 @@ fn decode_summit_snapshot_identity(
         )));
     }
 
+    let checkpoint_state = ConsensusState::try_from(&checkpoint).map_err(|error| {
+        CheckpointerError::CheckpointExecution(format!(
+            "Failed to decode Summit checkpoint state for epoch {epoch}: {error:?}"
+        ))
+    })?;
     let finalized_header = SummitFinalizedHeader::<MultisigScheme>::from_ssz_bytes(
         finalized_header_bytes,
     )
@@ -633,48 +650,95 @@ fn decode_summit_snapshot_identity(
             "Failed to decode Summit last_block for epoch {epoch}: {error:?}"
         ))
     })?;
-    let payload = &last_block.payload.payload_inner.payload_inner;
+    let finalized_header_digest = finalized_header.header().get_digest();
+    if last_block.digest() != finalized_header_digest {
+        return Err(CheckpointerError::CheckpointExecution(format!(
+            "Summit last block/finalized header digest mismatch for epoch {epoch}: block {}, header {}",
+            hex::encode(last_block.digest().as_ref()),
+            hex::encode(finalized_header_digest.as_ref())
+        )));
+    }
+    if checkpoint_state.get_head_digest() != last_block.parent() {
+        return Err(CheckpointerError::CheckpointExecution(format!(
+            "Summit checkpoint state/last block parent mismatch for epoch {epoch}: checkpoint head {}, last block parent {}",
+            hex::encode(checkpoint_state.get_head_digest().as_ref()),
+            hex::encode(last_block.parent().as_ref())
+        )));
+    }
+    validate_summit_checkpoint_position(
+        epoch,
+        checkpoint_block,
+        checkpoint_state.get_epoch(),
+        checkpoint_state.get_latest_height(),
+        finalized_header.header().epoch(),
+        finalized_header.header().height(),
+        last_block.epoch(),
+        last_block.height(),
+    )?;
 
-    Ok(SummitSnapshotIdentity {
+    // The checkpoint captures the penultimate Summit state. Its forkchoice head
+    // binds the corresponding execution block. The separately returned
+    // `last_block` is the terminal Summit block and must not be used as the Reth
+    // unwind identity.
+    Ok(SummitCheckpointIdentity {
         checkpoint_digest,
-        execution: ExecutionIdentity {
-            block_number: payload.block_number,
-            block_hash: payload.block_hash.0,
-            state_root: payload.state_root.0,
-        },
+        execution_block_hash: checkpoint_state.get_forkchoice().head_block_hash.0,
     })
 }
 
-fn validate_execution_identity(
+#[allow(clippy::too_many_arguments)]
+fn validate_summit_checkpoint_position(
     epoch: u64,
     checkpoint_block: u64,
-    summit: ExecutionIdentity,
-    reth: ExecutionIdentity,
+    checkpoint_state_epoch: u64,
+    checkpoint_state_height: u64,
+    finalized_header_epoch: u64,
+    finalized_header_height: u64,
+    last_block_epoch: u64,
+    last_block_height: u64,
 ) -> Result<()> {
-    if summit.block_number != checkpoint_block {
+    let terminal_height = checkpoint_block.checked_add(1).ok_or_else(|| {
+        CheckpointerError::CheckpointExecution(format!(
+            "Checkpoint block overflow while validating epoch {epoch}: {checkpoint_block}"
+        ))
+    })?;
+
+    if checkpoint_state_epoch != epoch || checkpoint_state_height != checkpoint_block {
         return Err(CheckpointerError::CheckpointExecution(format!(
-            "Summit execution block mismatch for epoch {epoch}: expected unwind block {checkpoint_block}, received {}",
-            summit.block_number
+            "Summit checkpoint state position mismatch for epoch {epoch}: expected epoch {epoch} at height {checkpoint_block}, received epoch {checkpoint_state_epoch} at height {checkpoint_state_height}"
         )));
     }
+    if finalized_header_epoch != epoch || finalized_header_height != terminal_height {
+        return Err(CheckpointerError::CheckpointExecution(format!(
+            "Summit finalized header position mismatch for epoch {epoch}: expected epoch {epoch} at terminal height {terminal_height}, received epoch {finalized_header_epoch} at height {finalized_header_height}"
+        )));
+    }
+    if last_block_epoch != epoch || last_block_height != terminal_height {
+        return Err(CheckpointerError::CheckpointExecution(format!(
+            "Summit last block position mismatch for epoch {epoch}: expected epoch {epoch} at terminal height {terminal_height}, received epoch {last_block_epoch} at height {last_block_height}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_checkpoint_execution_identity(
+    epoch: u64,
+    checkpoint_block: u64,
+    summit_checkpoint_block_hash: [u8; 32],
+    reth: ExecutionIdentity,
+) -> Result<()> {
     if reth.block_number != checkpoint_block {
         return Err(CheckpointerError::CheckpointExecution(format!(
             "Reth returned block {} while verifying checkpoint block {checkpoint_block} for epoch {epoch}",
             reth.block_number
         )));
     }
-    if summit.block_hash != reth.block_hash {
+    if summit_checkpoint_block_hash != reth.block_hash {
         return Err(CheckpointerError::CheckpointExecution(format!(
-            "Summit/Reth block hash mismatch for epoch {epoch} at block {checkpoint_block}: Summit {}, Reth {}",
-            hex::encode(summit.block_hash),
+            "Summit checkpoint/Reth block hash mismatch for epoch {epoch} at block {checkpoint_block}: Summit {}, Reth {}",
+            hex::encode(summit_checkpoint_block_hash),
             hex::encode(reth.block_hash)
-        )));
-    }
-    if summit.state_root != reth.state_root {
-        return Err(CheckpointerError::CheckpointExecution(format!(
-            "Summit/Reth state root mismatch for epoch {epoch} at block {checkpoint_block}: Summit {}, Reth {}",
-            hex::encode(summit.state_root),
-            hex::encode(reth.state_root)
         )));
     }
 
@@ -708,7 +772,8 @@ fn state_and_archive_allow_skip(
 #[cfg(test)]
 mod tests {
     use super::{
-        state_and_archive_allow_skip, validate_checkpoint_digest, validate_execution_identity,
+        state_and_archive_allow_skip, validate_checkpoint_digest,
+        validate_checkpoint_execution_identity, validate_summit_checkpoint_position,
         ExecutionIdentity,
     };
 
@@ -739,18 +804,36 @@ mod tests {
     }
 
     #[test]
-    fn summit_and_reth_execution_identity_must_match() {
+    fn checkpoint_position_accepts_penultimate_state_and_terminal_artifacts() {
+        assert!(validate_summit_checkpoint_position(7, 42, 7, 42, 7, 43, 7, 43).is_ok());
+    }
+
+    #[test]
+    fn checkpoint_position_rejects_terminal_checkpoint_state() {
+        assert!(validate_summit_checkpoint_position(7, 42, 7, 43, 7, 43, 7, 43).is_err());
+    }
+
+    #[test]
+    fn checkpoint_position_rejects_wrong_terminal_height() {
+        assert!(validate_summit_checkpoint_position(7, 42, 7, 42, 7, 42, 7, 43).is_err());
+        assert!(validate_summit_checkpoint_position(7, 42, 7, 42, 7, 43, 7, 42).is_err());
+    }
+
+    #[test]
+    fn summit_checkpoint_head_and_reth_execution_identity_must_match() {
         let identity = execution_identity();
 
-        assert!(validate_execution_identity(7, 42, identity, identity).is_ok());
+        assert!(
+            validate_checkpoint_execution_identity(7, 42, identity.block_hash, identity).is_ok()
+        );
     }
 
     #[test]
     fn execution_identity_rejects_wrong_unwind_block() {
-        let mut summit = execution_identity();
-        summit.block_number = 41;
+        let mut reth = execution_identity();
+        reth.block_number = 41;
 
-        assert!(validate_execution_identity(7, 42, summit, execution_identity()).is_err());
+        assert!(validate_checkpoint_execution_identity(7, 42, [0x11; 32], reth).is_err());
     }
 
     #[test]
@@ -758,14 +841,6 @@ mod tests {
         let mut reth = execution_identity();
         reth.block_hash = [0x33; 32];
 
-        assert!(validate_execution_identity(7, 42, execution_identity(), reth).is_err());
-    }
-
-    #[test]
-    fn execution_identity_rejects_state_root_mismatch() {
-        let mut reth = execution_identity();
-        reth.state_root = [0x33; 32];
-
-        assert!(validate_execution_identity(7, 42, execution_identity(), reth).is_err());
+        assert!(validate_checkpoint_execution_identity(7, 42, [0x11; 32], reth).is_err());
     }
 }
