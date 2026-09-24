@@ -770,6 +770,10 @@ fn state_and_archive_allow_skip(
 }
 
 #[cfg(test)]
+#[path = "manager/wire_tests.rs"]
+mod wire_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         state_and_archive_allow_skip, validate_checkpoint_digest,
